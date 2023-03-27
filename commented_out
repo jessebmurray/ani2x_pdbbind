@@ -1,0 +1,84 @@
+###################
+# Forward Hook
+
+# features = {}
+# def get_features(name):
+#     def hook(model, input, output):
+#         features[name] = output.detach()
+#     return hook
+# h = model_ani2x['H'][4].register_forward_hook(get_features('H'))
+###################
+
+
+###################
+# Energy shifter
+
+# sae_file = os.path.join(path, 'resources/ani-2x_8x/sae_linfit.dat')  # noqa: E501
+# energy_shifter = torchani.neurochem.load_sae(sae_file)
+# nnp_ani2x = torchani.nn.Sequential(aev_computer, model_ani2x, energy_shifter)
+###################
+
+
+###################
+# Histograms of parameters
+
+# plt.hist([f for f in model_rand['P'].parameters()][0].ravel().detach().numpy(), bins=50);
+# plt.hist([f for f in model_rand['S'].parameters()][0].ravel().detach().numpy(), bins=50);
+# plt.imshow([f for f in model_pre['S'].parameters()][0].detach().numpy());
+# plt.imshow([f for f in model_pre['F'].parameters()][0].detach().numpy());
+###################
+
+
+
+# mol = Chem.MolFromMol2File(mol_file)
+# mol = Chem.AddHs(mol, addCoords=True)
+# Ligand = LoadMolasDF(mol=mol)
+
+
+###################
+# To be readded
+
+# learning_rate = 0.00001
+# optimizer_pre = torch.optim.Adam(model_pre.parameters(), lr=learning_rate)
+# optimizer_rand = torch.optim.Adam(model_rand.parameters(), lr=learning_rate)
+# latest_checkpoint = 'latest.pt'
+
+# if os.path.isfile(latest_checkpoint):
+#     checkpoint = torch.load(latest_checkpoint)
+#     model_pre.load_state_dict(checkpoint['model_pre'])
+#     model_rand.load_state_dict(checkpoint['model_rand'])
+###################
+
+# atom_keys = pd.read_csv("../Data/PDB_Atom_Keys.csv", sep=",")
+
+
+
+###################
+
+# dfa = pd.concat(ligands)
+# dfae = dfa.groupby('pdb').species.unique()
+# dfae.map(lambda l: set(l).issubset(set(species_ani2x))).sum()
+# dfae.shape
+# 4510 / 5316
+# species_ex = set(dfa.species.unique()) - set(species_ani2x)
+# dfa.shape[0] - dfa.loc[dfa.species.isin(species_ex)].pdb.nunique()
+
+# dfa.groupby('species').pdb.count()
+# species_ani2x
+
+# for i, dfl in enumerate(ligands):
+#     dfl['pdb'] = pd.Series(np.repeat(pdbs[i], dfl.shape[0]))
+
+# refined = pd.read_excel("../Data/pdb_refined_set.xlsx", header=1)
+
+###################
+
+# species, coordinates = training[0]['species'], training[0]['coordinates']
+# aevs = aev_computer_ani2x.forward((species.unsqueeze(0), coordinates.unsqueeze(0)))
+
+# model_pre2((species.unsqueeze(0), coordinates.unsqueeze(0)))
+# species.unsqueeze(0)
+# model_pre((species.unsqueeze(0), aevs.aevs))
+# model_pre(aevs)
+
+
