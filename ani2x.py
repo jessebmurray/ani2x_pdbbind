@@ -11,7 +11,6 @@ from rdkit import Chem
 from biopandas.mol2 import PandasMol2
 from typing import Optional, Tuple, Union, List
 from torch.utils.data import DataLoader
-from sklearn.model_selection import train_test_split
 from torch import nn, optim
 
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
