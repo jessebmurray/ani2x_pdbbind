@@ -4,7 +4,6 @@ import os
 import tqdm
 import copy
 import mlflow
-import matplotlib.pyplot as plt
 from collections import OrderedDict
 import pandas as pd
 import numpy as np
@@ -328,14 +327,14 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
             valid_losses.append(valid_loss)
 
             # Log losses
-            mlflow.log_metric("train_loss", epoch_loss, step=epoch)
-            mlflow.log_metric("valid_loss", valid_loss, step=epoch)
+            # mlflow.log_metric("train_loss", epoch_loss, step=epoch)
+            # mlflow.log_metric("valid_loss", valid_loss, step=epoch)
 
     # Track best model
-    if best_epoch != 0:
-        mlflow.log_artifact(modelname)
+    # if best_epoch != 0:
+    #     mlflow.log_artifact(modelname)
 
-        mlflow.log_param("best _epoch", best_epoch)
+    #     mlflow.log_param("best _epoch", best_epoch)
 
     return train_losses, valid_losses
 

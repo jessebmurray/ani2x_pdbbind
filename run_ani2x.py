@@ -7,10 +7,7 @@ lr = 0.0005
 epochs = 100  # e
 batchsize = 64
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 path = torchani.__file__
-
 path = path.rstrip('__init__.py')
 const_file_ani2x = os.path.join(path, 'resources/ani-2x_8x/rHCNOSFCl-5.1R_16-3.5A_a8-4.params')
 
@@ -32,11 +29,14 @@ model_pre = torchani.ANIModel(models)
 model_rand = torchani.ANIModel(copy.deepcopy(models))
 model_rand.apply(init_params);
 
-# model_pre2 = torchani.nn.Sequential(aev_computer_ani2x, model_pre).to(device)
-# model_rand2 = torchani.nn.Sequential(aev_computer_ani2x, model_rand).to(device)
+# model_pre2 = torchani.nn.Sequential(aev_computer_ani2x, model_pre)
+# model_rand2 = torchani.nn.Sequential(aev_computer_ani2x, model_rand)
+
 
 data = load_data(distance_cutoff, consts_ani2x, df_gen)
-training, validation = train_test_split(data, train_size=0.8)
+train_size = int(0.8 * len(data))
+test_size = len(data) - train_size
+training, validation = torch.utils.data.random_split(data, [train_size, test_size])
 
 trainloader, validloader = get_data_loaders(training, validation, batch_size=batchsize)
 
