@@ -57,15 +57,16 @@ def get_entry(pdb, distance_cutoff, consts_ani2x, df_gen):
 
 def load_data(distance_cutoff, consts_ani2x, df_gen):
     data = []
+    failed_entries = []
     for pdb in df_gen.index:
         try:
             entry = get_entry(pdb, distance_cutoff, consts_ani2x, df_gen)
             data.append(entry)
         except WrongElements:
             pass
-        # except:
-        #     print(pdb)
-    return data
+        except:
+            failed_entries.append(pdb)
+    return data, failed_entries
 
 def _get_binding_affinity(df_gen, pdb):
     return  df_gen.loc[pdb].pK
