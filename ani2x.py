@@ -3,7 +3,7 @@ import torchani
 import os
 import tqdm
 import copy
-import mlflow
+# import mlflow
 from collections import OrderedDict
 import pandas as pd
 import numpy as np
@@ -63,8 +63,8 @@ def load_data(distance_cutoff, consts_ani2x, df_gen):
             data.append(entry)
         except WrongElements:
             pass
-        except:
-            print(pdb)
+        # except:
+        #     print(pdb)
     return data
 
 def _get_binding_affinity(df_gen, pdb):
@@ -238,7 +238,7 @@ def savemodel(model: nn.ModuleDict, path) -> None:
     """Save AffinityModel."""
     torch.save(
         {"state_dict": model.state_dict(),}, path,)
-    mlflow.log_artifact(path)
+    # mlflow.log_artifact(path)
 
 
 def train(model, optimizer, loss_function, aev_computer, trainloader, testloader,
