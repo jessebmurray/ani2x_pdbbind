@@ -80,7 +80,7 @@ def get_file(pdb, kind, df_gen):
     kind_text = kind_lookup[kind]
     subset = _get_subset(df_gen, pdb)
     folder = folder_lookup[subset]
-    file = f'./Data/{folder}/{pdb}/{pdb}_{kind_text}'
+    file = f'./Data/{folder}/{pdb.lower()}/{pdb.lower()}_{kind_text}'
     return file
 
 def get_aevs_from_file(file_name):
