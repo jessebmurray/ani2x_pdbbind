@@ -340,6 +340,6 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
 
 
 def save_list(lines, name):
-    with open(f'./losses/{name}.txt', 'w') as f:
+    with open(f'./losses/{name}.txt', 'w+') as f:
         for line in lines:
             f.write(f"{line}\n")
