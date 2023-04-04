@@ -16,8 +16,8 @@ from torch import nn, optim
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
 
 def get_df_gen():
-    general_file = './Data/v2020-other-PL/index/INDEX_general_PL_data.2020'
-    refined_file = './Data/v2020-other-PL/index/INDEX_refined_data.2020'
+    general_file = '../Data/v2020-other-PL/index/INDEX_general_PL_data.2020'
+    refined_file = '../Data/v2020-other-PL/index/INDEX_refined_data.2020'
     df_gen = get_pdb_entries(general_file)
     df_ref = get_pdb_entries(refined_file)
     refined_entry_ids = set(df_ref.index)
@@ -81,7 +81,7 @@ def get_file(pdb, kind, df_gen):
     kind_text = kind_lookup[kind]
     subset = _get_subset(df_gen, pdb)
     folder = folder_lookup[subset]
-    file = f'./Data/{folder}/{pdb.lower()}/{pdb.lower()}_{kind_text}'
+    file = f'../Data/{folder}/{pdb.lower()}/{pdb.lower()}_{kind_text}'
     return file
 
 def get_aevs_from_file(file_name):
