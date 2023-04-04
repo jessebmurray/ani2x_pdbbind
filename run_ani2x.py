@@ -33,7 +33,7 @@ model_rand.apply(init_params);
 # model_rand2 = torchani.nn.Sequential(aev_computer_ani2x, model_rand)
 
 
-data, failed_entries = load_data(distance_cutoff, consts_ani2x, df_gen[:1_000])
+data, failed_entries = load_data(distance_cutoff, consts_ani2x, df_gen)
 save_list(failed_entries, 'failed_entries')
 train_size = int(0.8 * len(data))
 test_size = len(data) - train_size
