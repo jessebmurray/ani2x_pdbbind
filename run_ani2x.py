@@ -3,9 +3,9 @@ from ani2x import *
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
 
 distance_cutoff = 6
-lr = 0.0005
-epochs = 100  # e
-batchsize = 64
+lr = 0.0002
+epochs = 50  # e
+batchsize = 25
 
 path = torchani.__file__
 path = path.rstrip('__init__.py')
