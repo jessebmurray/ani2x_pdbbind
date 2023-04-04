@@ -33,7 +33,7 @@ model_rand.apply(init_params);
 # model_rand2 = torchani.nn.Sequential(aev_computer_ani2x, model_rand)
 
 
-data, failed_entries = load_data(distance_cutoff, consts_ani2x, df_gen)
+data, failed_entries = load_data(distance_cutoff, consts_ani2x, df_gen[:1_000])
 save_list(failed_entries, 'failed_entries')
 train_size = int(0.8 * len(data))
 test_size = len(data) - train_size
@@ -49,10 +49,10 @@ optimizer_rand = optim.Adam(model_rand.parameters(), lr=lr)
 mse = nn.MSELoss()
 # Train model
 train_losses_pre, valid_losses_pre = train(model_pre, optimizer_pre, mse, aev_computer_ani2x,
-                    trainloader, validloader, epochs=epochs, savepath='./results_pre')
+                    trainloader, validloader, epochs=epochs, savepath='./results_pre/')
 
 train_losses_rand, valid_losses_rand = train(model_rand, optimizer_rand, mse, aev_computer_ani2x,
-                    trainloader, validloader, epochs=epochs, savepath='./results_rand')
+                    trainloader, validloader, epochs=epochs, savepath='./results_rand/')
 
 save_list(train_losses_pre, 'train_losses_pre')
 save_list(valid_losses_pre, 'valid_losses_pre')
