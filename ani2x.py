@@ -36,9 +36,9 @@ def train_model(trainloader, validloader, model, optimizer, id_, kind, epochs):
     consts_ani2x = get_consts_ani2x()
     aev_computer_ani2x = torchani.AEVComputer(**consts_ani2x)
     train_losses, valid_losses = train(model, optimizer, mse, aev_computer_ani2x,
-            trainloader, validloader, epochs=epochs, savepath=f'./results/{kind}_{i}_')
-    save_list(train_losses, f'train_losses_{kind}_{i}')
-    save_list(valid_losses, f'valid_losses_{kind}_{i}')
+            trainloader, validloader, epochs=epochs, savepath=f'./results/{kind}_{id_}_')
+    save_list(train_losses, f'train_losses_{kind}_{id_}')
+    save_list(valid_losses, f'valid_losses_{kind}_{id_}')
 
 def load_casf_split(distance_cutoff, batchsize):
     df_gen = get_df_gen()
