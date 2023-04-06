@@ -12,8 +12,76 @@ from biopandas.mol2 import PandasMol2
 from typing import Optional, Tuple, Union, List
 from torch.utils.data import DataLoader
 from torch import nn, optim
+from functools import cache
 
+DISTANCE_CUTOFF = 6
+N_MODELS = 8
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
+
+def train_models(batchsize, epochs, lr_pre, lr_rand):
+    trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
+    model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
+    model_rands = [load_random() for _ in range(N_MODELS)]
+    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre) for i in range(N_MODELS)]
+    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(trainloader, validloader, model_pres[i], optimizer_pres[i], i, 'pre', epochs)
+        train_model(trainloader, validloader, model_rands[i], optimizer_rands[i], i, 'rand', epochs)
+
+def train_model(trainloader, validloader, model, optimizer, id_, kind, epochs):
+    assert kind in {'pre', 'rand'}
+
+    # Define losses
+    mse = nn.MSELoss()
+    consts_ani2x = get_consts_ani2x()
+    aev_computer_ani2x = torchani.AEVComputer(**consts_ani2x)
+    train_losses, valid_losses = train(model, optimizer, mse, aev_computer_ani2x,
+            trainloader, validloader, epochs=epochs, savepath=f'./results/{kind}_{i}_')
+    save_list(train_losses, f'train_losses_{kind}_{i}')
+    save_list(valid_losses, f'valid_losses_{kind}_{i}')
+
+def load_casf_split(distance_cutoff, batchsize):
+    df_gen = get_df_gen()
+    df_training, df_validation = split_by_casf(df_gen)
+    data_training, failed_entries_training = load_data(distance_cutoff, df_training)
+    data_validation, failed_entries_validation = load_data(distance_cutoff, df_validation)
+    save_list(failed_entries_training, 'failed_entries_training')
+    save_list(failed_entries_validation, 'failed_entries_validation')
+    trainloader, validloader = get_data_loaders(data_training, data_validation, batchsize)
+    return trainloader, validloader
+
+def split_by_casf(df_gen):
+    casf = load_casf()
+    df_validation = df_gen.loc[df_gen.index.isin(casf)]
+    df_training = df_gen.loc[~df_gen.index.isin(casf)]
+    return df_training, df_validation
+
+def load_pretrained(id_=0):
+    assert id_ in set(range(8))
+    torchani_path = get_torchani_path()
+    consts_ani2x = get_consts_ani2x()
+    networks_path = f'resources/ani-2x_8x/train{id_}/networks'
+    network_ani2x_dir = os.path.join(torchani_path, networks_path)  # noqa: E501
+    model_pre = torchani.neurochem.load_model(consts_ani2x.species, network_ani2x_dir)
+    return model_pre
+
+def load_random():
+    model_pre = load_pretrained()
+    consts_ani2x = get_consts_ani2x()
+    models = OrderedDict()
+    for i in consts_ani2x.species:
+        # Models S, F, and Cl each have the same architecture
+        models[i] = model_pre[i]
+    models = copy.deepcopy(models)
+    model_rand = torchani.ANIModel(models)
+    model_rand.apply(init_params)
+    return model_rand
+
+def load_casf():
+    with open('casf.txt', 'r') as f:
+        casf = f.readlines()
+    casf = set([entry.rstrip('\n').upper() for entry in casf])
+    return casf
 
 def get_df_gen():
     general_file = '../Data/v2020-other-PL/index/INDEX_general_PL_data.2020'
@@ -26,7 +94,6 @@ def get_df_gen():
     df_gen['Refined'] = df_gen.index.isin(refined_entry_ids)
     df_gen['ID'] = pd.Series(np.arange(df_gen.shape[0]) + 1, index=df_gen.index)
     return df_gen
-
 
 def get_pdb_entries(file):
     with open(file, 'r') as f:
@@ -47,20 +114,20 @@ def get_pdb_entries(file):
 def _get_id(df_gen, pdb):
     return df_gen.loc[pdb]['ID']
 
-def get_entry(pdb, distance_cutoff, consts_ani2x, df_gen):
-    species, coordinates = get_species_coordinates(pdb, distance_cutoff, consts_ani2x, df_gen)
+def get_entry(pdb, distance_cutoff, df_gen):
+    species, coordinates = get_species_coordinates(pdb, distance_cutoff, df_gen)
     affinity = _get_binding_affinity(df_gen, pdb)
     id_ = _get_id(df_gen, pdb)
     entry = {'species': species, 'coordinates': coordinates,
             'affinity': affinity, 'id': id_}
     return entry
 
-def load_data(distance_cutoff, consts_ani2x, df_gen):
+def load_data(distance_cutoff, df_gen):
     data = []
     failed_entries = []
     for pdb in df_gen.index:
         try:
-            entry = get_entry(pdb, distance_cutoff, consts_ani2x, df_gen)
+            entry = get_entry(pdb, distance_cutoff, df_gen)
             data.append(entry)
         except WrongElements:
             pass
@@ -84,10 +151,10 @@ def get_file(pdb, kind, df_gen):
     file = f'../Data/{folder}/{pdb.lower()}/{pdb.lower()}_{kind_text}'
     return file
 
-def get_aevs_from_file(file_name):
-    consts = torchani.neurochem.Constants(file_name)
-    aev_computer = torchani.AEVComputer(**consts)
-    return aev_computer, consts
+# def get_aevs_from_file(file_name):
+#     consts = torchani.neurochem.Constants(file_name)
+#     aev_computer = torchani.AEVComputer(**consts)
+#     return aev_computer, consts
 
 def init_params(m):
     if isinstance(m, torch.nn.Linear):
@@ -122,7 +189,21 @@ def get_ligand_df(pdb, df_gen):
         raise WrongElements
     return df
 
-def get_species_coordinates(pdb, distance_cutoff, consts_ani2x, df_gen):
+@cache
+def get_torchani_path():
+    path = torchani.__file__
+    path = path.rstrip('__init__.py')
+    return path
+
+@cache
+def get_consts_ani2x():
+    torchani_path = get_torchani_path()
+    parameters_path = 'resources/ani-2x_8x/rHCNOSFCl-5.1R_16-3.5A_a8-4.params'
+    consts_file_path = os.path.join(torchani_path, parameters_path)
+    consts_ani2x = torchani.neurochem.Constants(consts_file_path)
+    return consts_ani2x
+
+def get_species_coordinates(pdb, distance_cutoff, df_gen):
     protein = get_protein_df(pdb, df_gen)
     ligand = get_ligand_df(pdb, df_gen)
     for i in ["x","y","z"]:
@@ -132,6 +213,7 @@ def get_species_coordinates(pdb, distance_cutoff, consts_ani2x, df_gen):
     protein_ligand = pd.concat([protein, ligand], join='inner')
     protein_ligand = protein_ligand.loc[protein_ligand.species.isin(SPECIES_ANI2X)]
     coordinates = torch.tensor(protein_ligand[['x','y','z']].values) #.unsqueeze(0)
+    consts_ani2x = get_consts_ani2x()
     species = consts_ani2x.species_to_tensor(protein_ligand.species.values) #.unsqueeze(0)
     return species, coordinates
 

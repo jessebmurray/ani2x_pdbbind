@@ -1,3 +1,7 @@
+# %load_ext autoreload
+# %autoreload 2
+
+
 ###################
 # Forward Hook
 
@@ -81,4 +85,21 @@
 # model_pre((species.unsqueeze(0), aevs.aevs))
 # model_pre(aevs)
 
+###################
 
+# model_pre['H'][-1].weight.requires_grad = False
+# model_pre['H'][-1].bias.requires_grad
+# [f for f in model_pre.named_parameters()]
+# model_pre.state_dict().keys()
+
+# torch.load('./results_pre/best.pth', map_location=torch.device('cpu'))
+
+
+###################
+
+
+def get_list(name):
+    with open(f'./losses/{name}.txt', 'r') as f:
+        lines = f.readlines()
+        lines = [float(line.rstrip('\n')) for line in lines]
+    return lines
