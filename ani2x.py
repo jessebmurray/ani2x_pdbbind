@@ -345,6 +345,8 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Move model and AEVComputer to device
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     model.to(device)
     aev_computer.to(device)
 
@@ -412,7 +414,7 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
             # Save best model
             if valid_loss < best_valid_loss and savepath is not None:
                 # TODO: Save Optimiser
-                modelname = os.path.join(savepath, "best.pth")
+                modelname = savepath + "best.pth"
 
                 savemodel(model, modelname)
 
