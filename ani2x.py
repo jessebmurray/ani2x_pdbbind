@@ -18,6 +18,20 @@ DISTANCE_CUTOFF = 6
 N_MODELS = 8
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
 
+def train_pre_models(batchsize, epochs, lr_pre):
+    trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
+    model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
+    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(trainloader, validloader, model_pres[i], optimizer_pres[i], i, 'pre', epochs)
+
+def train_rand_models(batchsize, epochs, lr_rand):
+    trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
+    model_rands = [load_random() for _ in range(N_MODELS)]
+    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(trainloader, validloader, model_rands[i], optimizer_rands[i], i, 'rand', epochs)
+
 def train_models(batchsize, epochs, lr_pre, lr_rand):
     trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
