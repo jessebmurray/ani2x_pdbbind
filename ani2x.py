@@ -399,7 +399,7 @@ class Data(torch.utils.data.Dataset):
 def get_data_loader(dataset, batchsize=40, shuffle=True):
     out = Data()
     out.load(dataset)
-    return DataLoader(out, batchsize=batchsize, shuffle=shuffle, collate_fn=pad_collate)
+    return DataLoader(out, batch_size=batchsize, shuffle=shuffle, collate_fn=pad_collate)
 
 def get_data_loaders(training, validation, batchsize=40):
     trainloader = get_data_loader(training, batchsize=batchsize)
