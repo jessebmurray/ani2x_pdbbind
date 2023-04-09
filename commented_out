@@ -98,6 +98,15 @@
 ###################
 
 
+# def load_casf_split(distance_cutoff, batchsize):
+#     df_gen = get_df_gen()
+#     df_training, df_validation = split_by_casf(df_gen)
+#     data_training, failed_entries_training = load_data(distance_cutoff, df_training)
+#     data_validation, failed_entries_validation = load_data(distance_cutoff, df_validation)
+#     save_list(failed_entries_training, 'failed_entries_training')
+#     save_list(failed_entries_validation, 'failed_entries_validation')
+#     trainloader, validloader = get_data_loaders(data_training, data_validation, batchsize)
+#     return trainloader, validloader
 def get_list(name):
     with open(f'./losses/{name}.txt', 'r') as f:
         lines = f.readlines()

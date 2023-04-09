@@ -3,6 +3,7 @@ import torchani
 import os
 import tqdm
 import copy
+import json
 # import mlflow
 from collections import OrderedDict
 import pandas as pd
@@ -18,51 +19,109 @@ DISTANCE_CUTOFF = 6
 N_MODELS = 8
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
 
-def train_pre_models(batchsize, epochs, lr_pre):
-    trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
-    model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
-    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre) for i in range(N_MODELS)]
-    for i in range(N_MODELS):
-        train_model(trainloader, validloader, model_pres[i], optimizer_pres[i], i, 'pre', epochs)
+consts_def = {'Rcr': 'radial cutoff',
+            'Rca': 'angular cutoff',
+            'EtaR': 'radial decay',
+            'ShfR': 'radial shift',
+            'EtaA': 'angular decay',
+            'Zeta': 'angular multiplicity',
+            'ShfA': 'angular radial shift',
+            'ShfZ': 'angular shift',
+            'num_species': 'number of species'}
 
-def train_rand_models(batchsize, epochs, lr_rand):
-    trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
-    model_rands = [load_random() for _ in range(N_MODELS)]
-    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand) for i in range(N_MODELS)]
-    for i in range(N_MODELS):
-        train_model(trainloader, validloader, model_rands[i], optimizer_rands[i], i, 'rand', epochs)
+def load_data_6_angstrom_refined():
+    data = load_data_6_angstrom()
+    data = remove_many_atoms(data)
+    data = remove_low_resolution(data)
+    data = remove_casf(data)
+    return data
 
-def train_models(batchsize, epochs, lr_pre, lr_rand):
-    trainloader, validloader = load_casf_split(DISTANCE_CUTOFF, batchsize)
-    model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
-    model_rands = [load_random() for _ in range(N_MODELS)]
-    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre) for i in range(N_MODELS)]
-    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand) for i in range(N_MODELS)]
-    for i in range(N_MODELS):
-        train_model(trainloader, validloader, model_pres[i], optimizer_pres[i], i, 'pre', epochs)
-        train_model(trainloader, validloader, model_rands[i], optimizer_rands[i], i, 'rand', epochs)
-
-def train_model(trainloader, validloader, model, optimizer, id_, kind, epochs):
+def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_percentage=0.85):
     assert kind in {'pre', 'rand'}
-
-    # Define losses
     mse = nn.MSELoss()
     consts_ani2x = get_consts_ani2x()
-    aev_computer_ani2x = torchani.AEVComputer(**consts_ani2x)
+    aev_computer_ani2x = get_aev_computer(consts_ani2x)
+    data_training, data_validation = split_data(data, id_, train_percentage)
+    trainloader, validloader = get_data_loaders(data_training, data_validation, batchsize)
     train_losses, valid_losses = train(model, optimizer, mse, aev_computer_ani2x,
             trainloader, validloader, epochs=epochs, savepath=f'./results/{kind}_{id_}_')
     save_list(train_losses, f'train_losses_{kind}_{id_}')
     save_list(valid_losses, f'valid_losses_{kind}_{id_}')
 
-def load_casf_split(distance_cutoff, batchsize):
+def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage):
+    model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
+    model_rands = [load_random() for _ in range(N_MODELS)]
+    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre',
+                    batchsize, epochs, train_percentage)
+        train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
+                    batchsize, epochs, train_percentage)
+
+def split_data(data, id_, train_percentage=0.85):
+    train_size = int(train_percentage * len(data))
+    test_size = len(data) - train_size
+    training, validation = torch.utils.data.random_split(data, [train_size, test_size])
+    training_ids = [entry['ID'] for entry in training]
+    validation_ids = [entry['ID'] for entry in validation]
+    save_list(training_ids, f'training_ids_{id_}', folder='splits')
+    save_list(validation_ids, f'validation_ids_{id_}', folder='splits')
+    return training, validation
+
+def save_data_6_angstrom():
+    assert DISTANCE_CUTOFF == 6
     df_gen = get_df_gen()
-    df_training, df_validation = split_by_casf(df_gen)
-    data_training, failed_entries_training = load_data(distance_cutoff, df_training)
-    data_validation, failed_entries_validation = load_data(distance_cutoff, df_validation)
-    save_list(failed_entries_training, 'failed_entries_training')
-    save_list(failed_entries_validation, 'failed_entries_validation')
-    trainloader, validloader = get_data_loaders(data_training, data_validation, batchsize)
-    return trainloader, validloader
+    data, failed_entries = load_data(DISTANCE_CUTOFF, df_gen)
+    for entry in data:
+        entry['species'] = list(entry['species'].numpy())
+        entry['coordinates'] = [list(l) for l in entry['coordinates'].numpy()]
+    df_data = pd.DataFrame(data)
+    df_data = df_data.set_index('ID')
+    df_gen = df_gen.reset_index().set_index('ID')
+    df_data = df_data.join(df_gen)
+    df_data.to_csv('./data/pdb_bind_ani2x_6_angstrom_backup.csv')
+
+def load_df_data_6_angstrom():
+    n_files = 5
+    dataframes = []
+    for i in range(n_files):
+        file_number = i + 1
+        file_path = f'./data/pdb_bind_ani2x_6_angstrom_{file_number}.csv'
+        dataframes.append(pd.read_csv(file_path))
+    df_data = pd.concat(dataframes)
+    df_data = df_data.set_index('ID')
+    return df_data
+
+def load_data_6_angstrom():
+    # pdb_bind_path = './data/pdb_bind_ani2x_6_angstrom.csv'
+    # df_data = pd.read_csv(pdb_bind_path, index_col=0)
+    df_data = load_df_data_6_angstrom()
+    data = df_data.reset_index().to_dict(orient='records')
+    for entry in data:
+        entry['species'] = torch.from_numpy(np.array(json.loads(entry['species'])))
+        entry['coordinates'] = torch.from_numpy(np.array(json.loads(entry['coordinates']))).to(torch.float32)
+    return data
+
+def remove_many_atoms(data, percentage=0.02):
+    # largest was 1426 atoms
+    sizes_dict = {entry['ID']: len(entry['species']) for entry in data}
+    sizes_series = pd.Series(sizes_dict).sort_values()
+    sizes_series = sizes_series[:-int(sizes_series.shape[0] * percentage)]
+    data_refined = [entry for entry in data if entry['ID'] in set(sizes_series.index)]
+    return data_refined
+
+def remove_casf(data):
+    casf = load_casf()
+    data_refined = [entry for entry in data if entry['Entry ID'] not in casf]
+    return data_refined
+
+def remove_low_resolution(data, resolution_threshold=3.5):
+    data_refined = [entry for entry in data if entry['Resolution'] < resolution_threshold]
+    return data_refined
+
+def get_aev_computer(consts):
+    return torchani.AEVComputer(**consts)
 
 def split_by_casf(df_gen):
     casf = load_casf()
@@ -133,7 +192,7 @@ def get_entry(pdb, distance_cutoff, df_gen):
     affinity = _get_binding_affinity(df_gen, pdb)
     id_ = _get_id(df_gen, pdb)
     entry = {'species': species, 'coordinates': coordinates,
-            'affinity': affinity, 'id': id_}
+            'affinity': affinity, 'ID': id_}
     return entry
 
 def load_data(distance_cutoff, df_gen):
@@ -216,6 +275,23 @@ def get_consts_ani2x():
     consts_file_path = os.path.join(torchani_path, parameters_path)
     consts_ani2x = torchani.neurochem.Constants(consts_file_path)
     return consts_ani2x
+
+def get_consts_ani1x():
+    torchani_path = get_torchani_path()
+    parameters_path = 'resources/ani-1x_8x/rHCNO-5.2R_16-3.5A_a4-8.params'
+    consts_file_path = os.path.join(torchani_path, parameters_path)
+    consts_ani1x = torchani.neurochem.Constants(consts_file_path)
+    return consts_ani1x
+
+def get_consts_aescore():
+    consts_ani1x = get_consts_ani1x()
+    consts_aescore = {**consts_ani1x}
+    consts_aescore['Rca'] = 5.2
+    consts_aescore['EtaA'] = torch.tensor([3.5])
+    consts_aescore['ShfA'] = torch.tensor([0])
+    consts_aescore['ShfZ'] = torch.tensor([0, np.pi])
+    consts_aescore['num_species'] = 10
+    return consts_aescore
 
 def get_species_coordinates(pdb, distance_cutoff, df_gen):
     protein = get_protein_df(pdb, df_gen)
@@ -315,20 +391,19 @@ class Data(torch.utils.data.Dataset):
     def load(self, data):
         self.n = len(data)
         for entry in data:
-            self.ids.append(entry['id'])
+            self.ids.append(entry['ID'])
             self.species.append(entry['species'])
             self.coordinates.append(entry['coordinates'])
             self.labels.append(entry['affinity'])
 
-def get_data_loader(dataset, batch_size=40, shuffle=True):
+def get_data_loader(dataset, batchsize=40, shuffle=True):
     out = Data()
     out.load(dataset)
-    return DataLoader(out, batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
+    return DataLoader(out, batchsize=batchsize, shuffle=shuffle, collate_fn=pad_collate)
 
-
-def get_data_loaders(training, validation, batch_size=40):
-    trainloader = get_data_loader(training, batch_size=batch_size)
-    validloader = get_data_loader(validation, batch_size=batch_size)
+def get_data_loaders(training, validation, batchsize=40):
+    trainloader = get_data_loader(training, batchsize=batchsize)
+    validloader = get_data_loader(validation, batchsize=batchsize)
     return trainloader, validloader
 
 def savemodel(model: nn.ModuleDict, path) -> None:
@@ -437,7 +512,7 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
     return train_losses, valid_losses
 
 
-def save_list(lines, name):
-    with open(f'./losses/{name}.txt', 'w+') as f:
+def save_list(lines, name, folder='losses'):
+    with open(f'./{folder}/{name}.txt', 'w+') as f:
         for line in lines:
             f.write(f"{line}\n")
