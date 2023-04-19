@@ -20,5 +20,5 @@ source ~/.bashrc
 conda activate
 
 
-python /data/localhost/not-backed-up/jemurray/ani2x_pdbbind/run_ani2x_rand.py
+python /data/localhost/not-backed-up/jemurray/ani2x_pdbbind/run_ani2x_pre.py
 

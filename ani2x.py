@@ -87,6 +87,20 @@ def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percenta
         train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
                     batchsize, epochs, train_percentage)
 
+def train_pre_models(data, batchsize, epochs, lr_pre, betas, train_percentage):
+    model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
+    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre',
+                    batchsize, epochs, train_percentage)
+
+def train_rand_models(data, batchsize, epochs, lr_rand, betas, train_percentage):
+    model_rands = [load_random() for _ in range(N_MODELS)]
+    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
+                    batchsize, epochs, train_percentage)
+
 def split_data(data, id_, train_percentage=0.85):
     train_size = int(train_percentage * len(data))
     test_size = len(data) - train_size
