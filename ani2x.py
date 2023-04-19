@@ -167,7 +167,7 @@ def save_df_gen():
 def load_df_gen():
     return pd.read_csv('./data/pdb_bind_gen.csv', index_col=0)
 
-def split_data():
+def save_pdb_bind():
     n_files = 6
     pdb_bind_path = '../Data/pdbbind_pocket.csv'
     df_bind = pd.read_csv(pdb_bind_path)
