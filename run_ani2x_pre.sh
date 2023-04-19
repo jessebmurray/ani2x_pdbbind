@@ -5,7 +5,7 @@
 #SBATCH --gpus-per-task=1               # number of gpus per task
 #SBATCH --cpus-per-gpu=1                # number of cores per gpu
 #SBATCH --mem-per-cpu=10000             # memory/cpu (in MB)
-#SBATCH -J ani2x_pdbbind_pre
+#SBATCH -J pre_ani2x
 #SBATCH --mail-user=jesse.murray@stats.ox.ac.uk
 #S BATCH --nodelist=nagagpu02.cpu.stats.ox.ac.uk
 #SBATCH --clusters srf_gpu_01 -w nagagpu02.cpu.stats.ox.ac.uk
