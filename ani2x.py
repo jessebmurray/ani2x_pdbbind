@@ -1,22 +1,34 @@
-import torch
-import torchani
 import os
-import tqdm
 import copy
 import json
-# import mlflow
-from collections import OrderedDict
+import re
+import tqdm
+import torch
+import torchani
 import pandas as pd
 import numpy as np
+from functools import cache
+from collections import OrderedDict
+from typing import Optional, Tuple, Union, List
 from rdkit import Chem
 from biopandas.mol2 import PandasMol2
-from typing import Optional, Tuple, Union, List
+from biopandas.pdb import PandasPdb
 from torch.utils.data import DataLoader
 from torch import nn, optim
-from functools import cache
+from datetime import date
 
-DISTANCE_CUTOFF = 6
+DISTANCE_CUTOFF = 5.2
 N_MODELS = 8
+PERIODIC_TABLE = """
+    H                                                                                                                           He
+    Li  Be                                                                                                  B   C   N   O   F   Ne
+    Na  Mg                                                                                                  Al  Si  P   S   Cl  Ar
+    K   Ca  Sc                                                          Ti  V   Cr  Mn  Fe  Co  Ni  Cu  Zn  Ga  Ge  As  Se  Br  Kr
+    Rb  Sr  Y                                                           Zr  Nb  Mo  Tc  Ru  Rh  Pd  Ag  Cd  In  Sn  Sb  Te  I   Xe
+    Cs  Ba  La  Ce  Pr  Nd  Pm  Sm  Eu  Gd  Tb  Dy  Ho  Er  Tm  Yb  Lu  Hf  Ta  W   Re  Os  Ir  Pt  Au  Hg  Tl  Pb  Bi  Po  At  Rn
+    Fr  Ra  Ac  Th  Pa  U   Np  Pu  Am  Cm  Bk  Cf  Es  Fm  Md  No  Lr  Rf  Db  Sg  Bh  Hs  Mt  Ds  Rg  Cn  Nh  Fl  Mc  Lv  Ts  Og
+    """.strip().split()
+
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
 
 consts_def = {'Rcr': 'radial cutoff',
@@ -29,12 +41,28 @@ consts_def = {'Rcr': 'radial cutoff',
             'ShfZ': 'angular shift',
             'num_species': 'number of species'}
 
-def load_data_6_angstrom_refined():
-    data = load_data_6_angstrom()
-    data = remove_many_atoms(data)
-    data = remove_low_resolution(data)
-    data = remove_casf(data)
-    return data
+def get_corr(x, y):
+    return np.corrcoef(x, y)[0][1]
+
+def get_labels(testloader):
+    for _, labels, _ in testloader:
+        labels = labels
+    return labels.numpy()
+
+def get_model_output(model, aev_computer, testloader):
+    for _, labels, species_coordinates in testloader:
+        species, coordinates = species_coordinates
+        aevs = aev_computer.forward((species, coordinates)).aevs
+        _, output = model((species, aevs))
+    return output.detach().numpy()
+
+def load_best_model(id_, kind):
+    assert kind in {'pre', 'rand'}
+    model_load_path = f'./results/{kind}_{id_}_best.pth'
+    model_load = load_pretrained()
+    model_load_sd = torch.load(model_load_path, map_location=torch.device('cpu'))['state_dict']
+    model_load.load_state_dict(model_load_sd)
+    return model_load
 
 def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_percentage=0.85):
     assert kind in {'pre', 'rand'}
@@ -69,65 +97,266 @@ def split_data(data, id_, train_percentage=0.85):
     save_list(validation_ids, f'validation_ids_{id_}', folder='splits')
     return training, validation
 
-def save_data_6_angstrom():
-    assert DISTANCE_CUTOFF == 6
-    df_gen = get_df_gen()
-    data, failed_entries = load_data(DISTANCE_CUTOFF, df_gen)
-    for entry in data:
-        entry['species'] = list(entry['species'].numpy())
-        entry['coordinates'] = [list(l) for l in entry['coordinates'].numpy()]
-    df_data = pd.DataFrame(data)
-    df_data = df_data.set_index('ID')
-    df_gen = df_gen.reset_index().set_index('ID')
-    df_data = df_data.join(df_gen)
-    df_data.to_csv('./data/pdb_bind_ani2x_6_angstrom_backup.csv')
 
-def load_df_data_6_angstrom():
-    n_files = 5
+######
+# DATA HANDLING
+
+def load_casf():
+    with open('casf.txt', 'r') as f:
+        casf = f.readlines()
+    casf = set([entry.rstrip('\n').upper() for entry in casf])
+    return casf
+
+def get_pdb_structural(pdb_structure_file):
+    struct_pattern = re.compile(
+        r'(\w{4}) \s+ (\w+\.?\w*) \s+ (\d{4}) \s+ (-?\d+\.?\d*) \s+ (-?\d+\.?\d*) \s+ (-?\d+\.?\d*)',
+        re.VERBOSE)
+    with open(pdb_structure_file, 'r') as f:
+        lines = f.readlines()
+    entries = list()
+    for line in lines[7:]:
+        struct_match = struct_pattern.match(line)
+        entry = {'PDB_ID': struct_match.group(1).upper(),
+                'R_factor': float(struct_match.group(4)),
+                'R_free': float(struct_match.group(5)),
+                'delta_R': float(struct_match.group(6))}
+        entries.append(entry)
+    return pd.DataFrame(entries).set_index('PDB_ID')
+
+def get_pdb_entries(pdb_info_file):
+    affinity_pattern = re.compile(r'(Ki|Kd|IC50)(=|~|<|<=|>|>=)\d')
+    with open(pdb_info_file, 'r') as f:
+        lines = f.readlines()
+    entries = list()
+    for line in lines[6:]:
+        entry = line.split('  ')
+        entry = entry[:5]
+        a, b, c, d, e = entry
+        match_obj = affinity_pattern.match(e)
+        binding_type, binding_symbol = match_obj.group(1), match_obj.group(2)
+        entry = {'PDB_ID': a.upper(),
+                'Resolution': float(b) if not b == ' NMR' else np.NAN,
+                'Release_Year': int(c),
+                'pK': float(d),
+                'Binding_Type': binding_type,
+                'Binding_Symbol': binding_symbol}
+        entries.append(entry)
+    return pd.DataFrame(entries).set_index('PDB_ID')
+
+def get_df_gen():
+    general_file = '../Data/v2020-other-PL/index/INDEX_general_PL_data.2020'
+    refined_file = '../Data/v2020-other-PL/index/INDEX_refined_data.2020'
+    df_gen = get_pdb_entries(general_file)
+    df_ref = get_pdb_entries(refined_file)
+    refined_entry_ids = set(df_ref.index)
+    general_entry_ids = set(df_gen.index)
+    assert (df_gen[df_gen.index.isin(refined_entry_ids)] == df_ref).all(axis=None)
+    df_gen['Refined'] = df_gen.index.isin(refined_entry_ids)
+    pdb_structure_file = '../Data/v2020-other-PL/index/INDEX_structure.2020'
+    df_gen_struct = get_pdb_structural(pdb_structure_file)
+    df_gen = df_gen.join(df_gen_struct, how='inner')
+    df_gen['ID'] = pd.Series(np.arange(df_gen.shape[0]) + 1, index=df_gen.index)
+    casf_2016 = load_casf()
+    df_gen['CASF_2016'] = df_gen.index.isin(casf_2016)
+    return df_gen
+
+def save_df_gen():
+    df_gen = get_df_gen()
+    df_gen.to_csv('./data/pdb_bind_gen_backup.csv')
+
+def load_df_gen():
+    return pd.read_csv('./data/pdb_bind_gen.csv', index_col=0)
+
+def split_data():
+    n_files = 6
+    pdb_bind_path = '../Data/pdbbind_pocket.csv'
+    df_bind = pd.read_csv(pdb_bind_path)
+    n_interval = df_bind.shape[0] // n_files
+    s = np.arange(0, n_interval*n_files, n_interval)
+    df_bind_1 = df_bind[s[0]: s[1]]
+    df_bind_2 = df_bind[s[1]: s[2]]
+    df_bind_3 = df_bind[s[2]: s[3]]
+    df_bind_4 = df_bind[s[3]: s[4]]
+    df_bind_5 = df_bind[s[4]: s[5]]
+    df_bind_6 = df_bind[s[5]: ]
+    df_bind_1.to_csv('./data/pdb_bind_pocket_1.csv', index=False)
+    df_bind_2.to_csv('./data/pdb_bind_pocket_2.csv', index=False)
+    df_bind_4.to_csv('./data/pdb_bind_pocket_4.csv', index=False)
+    df_bind_3.to_csv('./data/pdb_bind_pocket_3.csv', index=False)
+    df_bind_5.to_csv('./data/pdb_bind_pocket_5.csv', index=False)
+    df_bind_6.to_csv('./data/pdb_bind_pocket_6.csv', index=False)
+
+def load_pdb_bind():
+    n_files = 6
     dataframes = []
     for i in range(n_files):
         file_number = i + 1
-        file_path = f'./data/pdb_bind_ani2x_6_angstrom_{file_number}.csv'
+        file_path = f'./data/pdb_bind_pocket_{file_number}.csv'
         dataframes.append(pd.read_csv(file_path))
-    df_data = pd.concat(dataframes)
-    df_data = df_data.set_index('ID')
-    return df_data
+    df_bind = pd.concat(dataframes)
+    df_bind = df_bind.astype({'x': 'float32', 'y': 'float32', 'z': 'float32'})
+    return df_bind
 
-def load_data_6_angstrom():
-    # pdb_bind_path = './data/pdb_bind_ani2x_6_angstrom.csv'
-    # df_data = pd.read_csv(pdb_bind_path, index_col=0)
-    df_data = load_df_data_6_angstrom()
-    data = df_data.reset_index().to_dict(orient='records')
-    for entry in data:
-        entry['species'] = torch.from_numpy(np.array(json.loads(entry['species'])))
-        entry['coordinates'] = torch.from_numpy(np.array(json.loads(entry['coordinates']))).to(torch.float32)
+def filter_casf(df_bind, df_gen, filter_out=True):
+    casf_2016 = set(df_gen[df_gen.CASF_2016].index)
+    within_casf = df_bind.PDB_ID.isin(casf_2016)
+    if filter_out:
+        return df_bind[~within_casf]
+    return df_bind[within_casf]
+
+def load_pdb_bind_filtered(filter_out_casf=True, convert=True):
+    df_bind_all = load_pdb_bind()
+    df_gen = load_df_gen()
+    df_bind = filter_casf(df_bind_all, df_gen, filter_out=filter_out_casf)
+    df_bind = restrict_to_species(df_bind, species=SPECIES_ANI2X)
+    quality_pdbs = get_quality_pdbs(df_gen)
+    natom_pdbs = get_natom_pdbs(df_bind_all)
+    queried_pdbs = set.intersection(natom_pdbs, quality_pdbs)
+    df_bind = df_bind[df_bind.PDB_ID.isin(queried_pdbs)]
+    df_bind = get_within_cutoff(df_bind, distance_cutoff=DISTANCE_CUTOFF)
+    if convert:
+        data = convert_to_data(df_bind, df_gen)
+        return data
+    return df_bind
+
+def _get_entry(df_bind_pdb, df_gen, consts_ani2x):
+    pdb = df_bind_pdb.PDB_ID.iloc[0]
+    species = consts_ani2x.species_to_tensor(df_bind_pdb.element.values) #.unsqueeze(0)
+    coordinates = torch.tensor(df_bind_pdb[['x','y','z']].values)
+    affinity = df_gen.loc[pdb].ID
+    id_ = df_gen.loc[pdb].ID
+    entry = {'species': species, 'coordinates': coordinates,
+                'affinity': affinity, 'ID': id_}
+    return entry
+
+def convert_to_data(df_bind, df_gen):
+    consts_ani2x = get_consts_ani2x()
+    data = df_bind.groupby('PDB_ID').apply(lambda df_bind_pdb: _get_entry(df_bind_pdb, df_gen, consts_ani2x)).tolist()
     return data
 
-def remove_many_atoms(data, percentage=0.02):
-    # largest was 1426 atoms
-    sizes_dict = {entry['ID']: len(entry['species']) for entry in data}
-    sizes_series = pd.Series(sizes_dict).sort_values()
-    sizes_series = sizes_series[:-int(sizes_series.shape[0] * percentage)]
-    data_refined = [entry for entry in data if entry['ID'] in set(sizes_series.index)]
-    return data_refined
+def filter_casf(df_bind, df_gen, filter_out=True):
+    casf_2016 = set(df_gen[df_gen.CASF_2016].index)
+    within_casf = df_bind.PDB_ID.isin(casf_2016)
+    if filter_out:
+        return df_bind[~within_casf]
+    return df_bind[within_casf]
 
-def remove_casf(data):
-    casf = load_casf()
-    data_refined = [entry for entry in data if entry['Entry ID'] not in casf]
-    return data_refined
+def get_natom_pdbs(df_bind, cutoff_quantile=0.975):
+    ligand_natoms = df_bind[df_bind.atom_kind == 'L'].groupby('PDB_ID').element.count()
+    ligand_query = ligand_natoms < ligand_natoms.quantile(cutoff_quantile)
+    ligand_pdbs = set(ligand_query[ligand_query].index)
+    structure_natoms = df_bind.groupby('PDB_ID').element.count()
+    structure_query = structure_natoms < structure_natoms.quantile(cutoff_quantile)
+    structure_pdbs = set(structure_query[structure_query].index)
+    queried_pdbs = set.intersection(ligand_pdbs, structure_pdbs)
+    return queried_pdbs
 
-def remove_low_resolution(data, resolution_threshold=3.5):
-    data_refined = [entry for entry in data if entry['Resolution'] < resolution_threshold]
-    return data_refined
+def get_quality_pdbs(df_gen, binding_symbols={'='}, cutoff_quantile=0.975):
+    query_binding = df_gen.Binding_Symbol.isin(binding_symbols)
+    query_r_free = df_gen.R_free < df_gen.R_free.quantile(cutoff_quantile)
+    query_resolution = df_gen.Resolution < df_gen.Resolution.quantile(cutoff_quantile)
+    queries = (query_binding, query_r_free, query_resolution)
+    queried_pdbs = set.intersection(*map(lambda query: set(df_gen[query].index), queries))
+    return queried_pdbs
+
+def restrict_to_species(df_bind, species):
+    pdb_in_species = df_bind.groupby('PDB_ID').element.apply(lambda element_list: set(element_list).issubset(species))
+    valid_pdbs = set(pdb_in_species[pdb_in_species].index)
+    return df_bind[df_bind.PDB_ID.isin(valid_pdbs)]
+
+def get_ligand_cutoffs(df_bind, distance_cutoff):
+    ligand_cutoffs = df_bind[df_bind.atom_kind == 'L'].groupby('PDB_ID')[['x', 'y', 'z']].agg(['min', 'max'])
+    ligand_cutoffs.columns.names = ['coord', 'measure']
+    ligand_cutoffs = ligand_cutoffs.reorder_levels(order=['measure', 'coord'], axis=1)
+    ligand_cutoffs.rename(columns={'min': 'Min', 'max': 'Max'}, inplace=True)
+    ligand_cutoffs['Min'] -= distance_cutoff
+    ligand_cutoffs['Max'] += distance_cutoff
+    return ligand_cutoffs
+
+def _check_if_within(df_bind_pdb, ligand_cutoffs):
+    pdb = df_bind_pdb.PDB_ID.iloc[0]
+    greater_than_min = (df_bind_pdb[['x', 'y', 'z']] > ligand_cutoffs.loc[pdb].Min).all(axis=1)
+    less_than_max = (df_bind_pdb[['x', 'y', 'z']] < ligand_cutoffs.loc[pdb].Max).all(axis=1)
+    return greater_than_min  & less_than_max
+
+def get_within_cutoff(df_bind, distance_cutoff):
+    ligand_cutoffs = get_ligand_cutoffs(df_bind, distance_cutoff)
+    within_cutoff = df_bind.groupby('PDB_ID').apply(lambda df_bind_pdb: _check_if_within(df_bind_pdb, ligand_cutoffs))
+    return df_bind[within_cutoff.values]
+
+def get_file(pdb, kind, df_gen, file_type='pocket'):
+    assert file_type in {'pocket', 'protein'}
+    folder_lookup = {'refined': 'refined-set', 'general': 'v2020-other-PL'}
+    kind_lookup = {'ligand': 'ligand.mol2', 'protein': f'{file_type}.pdb'}
+    kind_text = kind_lookup[kind]
+    subset = 'refined' if df_gen.loc[pdb].Refined else 'general'
+    folder = folder_lookup[subset]
+    file = f'../Data/{folder}/{pdb.lower()}/{pdb.lower()}_{kind_text}'
+    return file
+
+def get_pdbbind(file_type='pocket', save=True):
+    df_gen = get_df_gen()
+    df_hetatm = get_pdb_df(atom_kind='hetatm', df_gen=df_gen, file_type='pocket')
+    df_protein = get_pdb_df(atom_kind='protein', df_gen=df_gen, file_type='pocket')
+    df_ligand = get_ligand_df(df_gen)
+    df_bind = pd.concat([df_ligand, df_protein, df_hetatm])
+    df_bind = df_bind[df_bind.PDB_ID != '2W73']
+    df_bind = df_bind.sort_values(by=['PDB_ID', 'atom_kind', 'atom_number'])
+    if save:
+        todays_date = date.today().strftime("%Y_%m_%d")
+        filename = f'../Data/pdbbind_pocket-backup_{todays_date}.csv'
+        df_bind.to_csv(filename, index=False)
+    return df_bind
+
+def _drop_empty_columns(df):
+    dropped_cols = set(df.nunique()[df.nunique() <= 1].index) - {'atom_kind'}
+    df_updated = df.drop(columns=dropped_cols)
+    return df_updated
+
+def get_pdb_df(atom_kind, df_gen, file_type='pocket'):
+    assert atom_kind in {'protein', 'hetatm'}
+    ppdb_key = {'protein': 'ATOM', 'hetatm': 'HETATM'}
+    atom_kind_key = {'protein': 'P', 'hetatm': 'H'}
+    dfs = []
+    for pdb_id in df_gen.index:
+        pdb_file = get_file(pdb=pdb_id, kind='protein', df_gen=df_gen, file_type=file_type)
+        df = PandasPdb().read_pdb(pdb_file).df[ppdb_key[atom_kind]]
+        df['PDB_ID'] = pdb_id
+        dfs.append(df)
+    df = pd.concat(dfs)
+    df['atom_kind'] = atom_kind_key[atom_kind]
+    df = _drop_empty_columns(df)
+    drop_columns = ['atom_name', 'chain_id', 'residue_number', 'insertion', 'line_idx']
+    df.drop(columns=drop_columns, inplace=True)
+    df.element_symbol = df.element_symbol.str.capitalize()
+    df.rename(columns={'element_symbol': 'element', 'residue_name': 'molecule_name',
+                        'x_coord': 'x', 'y_coord': 'y', 'z_coord': 'z'}, inplace=True)
+    df = df.astype({'x': 'float32', 'y': 'float32', 'z': 'float32'})
+    return df
+
+def get_ligand_df(df_gen):
+    dfs = []
+    for pdb_id in df_gen.index:
+        if pdb_id == '2W73':  # Failed PDB
+            continue
+        mol_file = get_file(pdb=pdb_id, kind='ligand', df_gen=df_gen)
+        df = PandasMol2().read_mol2(mol_file).df
+        df['PDB_ID'] = pdb_id
+        dfs.append(df)
+    df = pd.concat(dfs)
+    df['atom_kind'] = 'L'
+    df = df.astype({'x': 'float32', 'y': 'float32', 'z': 'float32'})
+    df['element'] = df.atom_type.map(lambda string: re.match(r'\w+', string).group(0))
+    df['b_factor'] = np.nan
+    df.drop(columns=['atom_name', 'atom_type', 'subst_id', 'charge'], inplace=True)
+    df.rename(columns={'subst_name': 'molecule_name', 'atom_id': 'atom_number'}, inplace=True)
+    return df
+
+# TORCH STUFF
+#######
 
 def get_aev_computer(consts):
     return torchani.AEVComputer(**consts)
-
-def split_by_casf(df_gen):
-    casf = load_casf()
-    df_validation = df_gen.loc[df_gen.index.isin(casf)]
-    df_training = df_gen.loc[~df_gen.index.isin(casf)]
-    return df_training, df_validation
 
 def load_pretrained(id_=0):
     assert id_ in set(range(8))
@@ -150,117 +379,10 @@ def load_random():
     model_rand.apply(init_params)
     return model_rand
 
-def load_casf():
-    with open('casf.txt', 'r') as f:
-        casf = f.readlines()
-    casf = set([entry.rstrip('\n').upper() for entry in casf])
-    return casf
-
-def get_df_gen():
-    general_file = '../Data/v2020-other-PL/index/INDEX_general_PL_data.2020'
-    refined_file = '../Data/v2020-other-PL/index/INDEX_refined_data.2020'
-    df_gen = get_pdb_entries(general_file)
-    df_ref = get_pdb_entries(refined_file)
-    refined_entry_ids = set(df_ref.index)
-    general_entry_ids = set(df_gen.index)
-    assert set(refined_entry_ids).issubset(set(general_entry_ids))
-    df_gen['Refined'] = df_gen.index.isin(refined_entry_ids)
-    df_gen['ID'] = pd.Series(np.arange(df_gen.shape[0]) + 1, index=df_gen.index)
-    return df_gen
-
-def get_pdb_entries(file):
-    with open(file, 'r') as f:
-        lines = f.readlines()
-    entries = list()
-    for line in lines[6:]:
-        entry = line.split('  ')
-        # Can add parser for Ki<10mM stuff by going [:5]
-        entry = entry[:4]
-        a, b, c, d = entry
-        entry = {'Entry ID': a.upper(),
-                'Resolution': float(b) if not b == ' NMR' else np.NAN,
-                'Release Year': int(c),
-                'pK': float(d)}
-        entries.append(entry)
-    return pd.DataFrame(entries).set_index('Entry ID')
-
-def _get_id(df_gen, pdb):
-    return df_gen.loc[pdb]['ID']
-
-def get_entry(pdb, distance_cutoff, df_gen):
-    species, coordinates = get_species_coordinates(pdb, distance_cutoff, df_gen)
-    affinity = _get_binding_affinity(df_gen, pdb)
-    id_ = _get_id(df_gen, pdb)
-    entry = {'species': species, 'coordinates': coordinates,
-            'affinity': affinity, 'ID': id_}
-    return entry
-
-def load_data(distance_cutoff, df_gen):
-    data = []
-    failed_entries = []
-    for pdb in df_gen.index:
-        try:
-            entry = get_entry(pdb, distance_cutoff, df_gen)
-            data.append(entry)
-        except WrongElements:
-            pass
-        except:
-            failed_entries.append(pdb)
-    return data, failed_entries
-
-def _get_binding_affinity(df_gen, pdb):
-    return  df_gen.loc[pdb].pK
-
-def _get_subset(df_gen, pdb):
-    subset = 'refined' if df_gen.loc[pdb].Refined else 'general'
-    return subset
-
-def get_file(pdb, kind, df_gen):
-    folder_lookup = {'refined': 'refined-set', 'general': 'v2020-other-PL'}
-    kind_lookup = {'ligand': 'ligand.mol2', 'protein': 'protein.pdb'}
-    kind_text = kind_lookup[kind]
-    subset = _get_subset(df_gen, pdb)
-    folder = folder_lookup[subset]
-    file = f'../Data/{folder}/{pdb.lower()}/{pdb.lower()}_{kind_text}'
-    return file
-
-# def get_aevs_from_file(file_name):
-#     consts = torchani.neurochem.Constants(file_name)
-#     aev_computer = torchani.AEVComputer(**consts)
-#     return aev_computer, consts
-
 def init_params(m):
     if isinstance(m, torch.nn.Linear):
         torch.nn.init.kaiming_normal_(m.weight, a=1.0)
         torch.nn.init.zeros_(m.bias)
-
-class WrongElements(Exception):
-    pass
-
-def get_protein_df(pdb, df_gen):
-    colspecs = [(0, 6), (6, 11), (12, 16), (16, 17), (17, 20), (21, 22), (22, 26),
-            (26, 27), (30, 38), (38, 46), (46, 54), (54, 60), (60, 66), (76, 78),
-            (78, 80)]
-    names = ['ATOM', 'serial', 'name', 'altloc', 'resname', 'chainid', 'resseq',
-         'icode', 'x', 'y', 'z', 'occupancy', 'tempfactor', 'element', 'charge']
-    pdb_file = get_file(pdb=pdb, kind='protein', df_gen=df_gen)
-    df = pd.read_fwf(pdb_file, names=names, colspecs=colspecs)
-    df = df.loc[df.ATOM == 'ATOM']
-    df = df.drop(columns='ATOM')
-    df = df.rename(columns = {'element': 'species'})
-    df = df.astype({'x': 'float32', 'y': 'float32', 'z': 'float32'})
-    if not set(df.species.unique()).issubset(SPECIES_ANI2X):
-        raise WrongElements
-    return df
-
-def get_ligand_df(pdb, df_gen):
-    mol_file = get_file(pdb=pdb, kind='ligand', df_gen=df_gen)
-    df = PandasMol2().read_mol2(mol_file).df
-    df['species'] = df.atom_type.str.split('.').str[0]
-    df = df.astype({'x': 'float32', 'y': 'float32', 'z': 'float32'})
-    if not set(df.species.unique()).issubset(SPECIES_ANI2X):
-        raise WrongElements
-    return df
 
 @cache
 def get_torchani_path():
@@ -293,20 +415,6 @@ def get_consts_aescore():
     consts_aescore['num_species'] = 10
     return consts_aescore
 
-def get_species_coordinates(pdb, distance_cutoff, df_gen):
-    protein = get_protein_df(pdb, df_gen)
-    ligand = get_ligand_df(pdb, df_gen)
-    for i in ["x","y","z"]:
-        protein = protein[protein[i] < float(ligand[i].max())+distance_cutoff]
-        protein = protein[protein[i] > float(ligand[i].min())-distance_cutoff]
-    # Reduce to just the neural network elements
-    protein_ligand = pd.concat([protein, ligand], join='inner')
-    protein_ligand = protein_ligand.loc[protein_ligand.species.isin(SPECIES_ANI2X)]
-    coordinates = torch.tensor(protein_ligand[['x','y','z']].values) #.unsqueeze(0)
-    consts_ani2x = get_consts_ani2x()
-    species = consts_ani2x.species_to_tensor(protein_ligand.species.values) #.unsqueeze(0)
-    return species, coordinates
-
 def pad_collate(
     batch,
     species_pad_value=-1,
@@ -316,27 +424,6 @@ def pad_collate(
     Tuple[np.ndarray, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
     Tuple[np.ndarray, torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
     ]:
-    """
-    Collate function to pad batches.
-    Parameters
-    ----------
-    batch:
-        Batch
-    species_pad_value:
-        Padding value for species vector
-    coords_pad_value:
-        Padding value for coordinates
-    device: Optional[Union[str, torch.device]]
-        Computation device
-    Returns
-    -------
-    Tuple[np.ndarray, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-    Notes
-    -----
-    :code:`torch.utils.data.Dataset`'s :code:`__getitem__` returns a batch that need
-    to be padded. This function can be passed to :code:`torch.utils.data.DataLoader`
-    as :code:`collate_fn` argument in order to pad species and coordinates
-    """
     ids, labels, species_and_coordinates = zip(*batch)
     species, coordinates = zip(*species_and_coordinates)
     pad_species = torch.nn.utils.rnn.pad_sequence(
@@ -348,11 +435,8 @@ def pad_collate(
 
 
 class Data(torch.utils.data.Dataset):
-
     def __init__(self) -> None:
         super().__init__()
-
-        # TODO: Better way to avoid mypy complaints?
         self.n: int = -1
         self.ids: List[str] = []
         self.labels: List[float] = []  # energies or affinity
@@ -360,26 +444,12 @@ class Data(torch.utils.data.Dataset):
         self.coordinates: List[torch.Tensor] = []
 
     def __len__(self) -> int:
-        """
-        Number of protein-ligand complexes in the dataset.
-        Returns
-        -------
-        int
-            Dataset length
-        """
         return self.n
 
     def __getitem__(
         self, idx: int
     ):  # -> Tuple[str, float, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Get item from dataset.
-        Parameters
-        ----------
-        idx: int
-            Item index within the dataset
-        Returns
-        -------
         Tuple[str, float, Tuple[torch.Tensor, torch.Tensor]]
             Item from the dataset (PDB IDs, labels, species, coordinates)
         """
@@ -511,8 +581,8 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
 
     return train_losses, valid_losses
 
-
 def save_list(lines, name, folder='losses'):
     with open(f'./{folder}/{name}.txt', 'w+') as f:
         for line in lines:
             f.write(f"{line}\n")
+
