@@ -255,7 +255,7 @@ def filter_casf(df_bind, df_gen, filter_out=True):
         return df_bind[~within_casf]
     return df_bind[within_casf]
 
-def get_natom_pdbs(df_bind, cutoff_quantile=0.975):
+def get_natom_pdbs(df_bind, cutoff_quantile=0.95):
     ligand_natoms = df_bind[df_bind.atom_kind == 'L'].groupby('PDB_ID').element.count()
     ligand_query = ligand_natoms < ligand_natoms.quantile(cutoff_quantile)
     ligand_pdbs = set(ligand_query[ligand_query].index)
