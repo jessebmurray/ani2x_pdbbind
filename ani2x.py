@@ -237,7 +237,7 @@ def _get_entry(df_bind_pdb, df_gen, consts_ani2x):
     pdb = df_bind_pdb.PDB_ID.iloc[0]
     species = consts_ani2x.species_to_tensor(df_bind_pdb.element.values) #.unsqueeze(0)
     coordinates = torch.tensor(df_bind_pdb[['x','y','z']].values)
-    affinity = df_gen.loc[pdb].ID
+    affinity = df_gen.loc[pdb].pK
     id_ = df_gen.loc[pdb].ID
     entry = {'species': species, 'coordinates': coordinates,
                 'affinity': affinity, 'ID': id_}
