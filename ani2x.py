@@ -76,15 +76,15 @@ def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_perc
     save_list(train_losses, f'train_losses_{kind}_{id_}')
     save_list(valid_losses, f'valid_losses_{kind}_{id_}')
 
-def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage):
+def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, prefix=''):
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
     model_rands = [load_random() for _ in range(N_MODELS)]
     optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
     optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
     for i in range(N_MODELS):
-        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre',
+        train_model(data, model_pres[i], optimizer_pres[i], i, f'{prefix}pre',
                     batchsize, epochs, train_percentage)
-        train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
+        train_model(data, model_rands[i], optimizer_rands[i], i, f'{prefix}rand',
                     batchsize, epochs, train_percentage)
 
 def train_pre_models(data, batchsize, epochs, lr_pre, betas, train_percentage):
@@ -218,7 +218,7 @@ def filter_casf(df_bind, df_gen, filter_out=True):
         return df_bind[~within_casf]
     return df_bind[within_casf]
 
-def load_pdb_bind_filtered(filter_out_casf=True, convert=True):
+def load_pdb_bind_filtered(filter_out_casf=True, convert=True, ligand_only=False):
     df_bind_all = load_pdb_bind()
     df_gen = load_df_gen()
     df_bind = filter_casf(df_bind_all, df_gen, filter_out=filter_out_casf)
@@ -228,6 +228,8 @@ def load_pdb_bind_filtered(filter_out_casf=True, convert=True):
     queried_pdbs = set.intersection(natom_pdbs, quality_pdbs)
     df_bind = df_bind[df_bind.PDB_ID.isin(queried_pdbs)]
     df_bind = get_within_cutoff(df_bind, distance_cutoff=DISTANCE_CUTOFF)
+    if ligand_only:
+        df_bind = df_bind[df_bind.atom_kind == 'L']
     if convert:
         data = convert_to_data(df_bind, df_gen)
         return data
