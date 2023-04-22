@@ -64,7 +64,7 @@ def load_best_model(id_, kind):
     model_load.load_state_dict(model_load_sd)
     return model_load
 
-def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_percentage=0.85):
+def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_percentage=0.85, name=''):
     assert kind in {'pre', 'rand'}
     mse = nn.MSELoss()
     consts_ani2x = get_consts_ani2x()
@@ -73,19 +73,19 @@ def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_perc
     trainloader, validloader = get_data_loaders(data_training, data_validation, batchsize)
     train_losses, valid_losses = train(model, optimizer, mse, aev_computer_ani2x,
             trainloader, validloader, epochs=epochs, savepath=f'./results/{kind}_{id_}_')
-    save_list(train_losses, f'train_losses_{kind}_{id_}')
-    save_list(valid_losses, f'valid_losses_{kind}_{id_}')
+    save_list(train_losses, f'train_losses_{name}_{kind}_{id_}')
+    save_list(valid_losses, f'valid_losses_{name}_{kind}_{id_}')
 
-def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, prefix=''):
+def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, name=''):
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
     model_rands = [load_random() for _ in range(N_MODELS)]
     optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
     optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
     for i in range(N_MODELS):
-        train_model(data, model_pres[i], optimizer_pres[i], i, f'{prefix}pre',
-                    batchsize, epochs, train_percentage)
-        train_model(data, model_rands[i], optimizer_rands[i], i, f'{prefix}rand',
-                    batchsize, epochs, train_percentage)
+        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre',
+                    batchsize, epochs, train_percentage, name=name)
+        train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
+                    batchsize, epochs, train_percentage, name=name)
 
 def train_pre_models(data, batchsize, epochs, lr_pre, betas, train_percentage):
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
