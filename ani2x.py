@@ -72,7 +72,7 @@ def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_perc
     data_training, data_validation = split_data(data, id_, train_percentage)
     trainloader, validloader = get_data_loaders(data_training, data_validation, batchsize)
     train_losses, valid_losses = train(model, optimizer, mse, aev_computer_ani2x,
-            trainloader, validloader, epochs=epochs, savepath=f'./results/{kind}_{id_}_')
+            trainloader, validloader, epochs=epochs, savepath=f'./results/{name}_{kind}_{id_}_')
     save_list(train_losses, f'train_losses_{name}_{kind}_{id_}')
     save_list(valid_losses, f'valid_losses_{name}_{kind}_{id_}')
 
@@ -218,7 +218,12 @@ def filter_casf(df_bind, df_gen, filter_out=True):
         return df_bind[~within_casf]
     return df_bind[within_casf]
 
-def load_pdb_bind_filtered(filter_out_casf=True, convert=True, ligand_only=False):
+def mask_ligands(df_bind):
+    df_bind['Mask'] = df_bind.atom_kind == 'L'
+    return df_bind
+
+def load_pdb_bind_filtered(filter_out_casf=True, convert=True, ligand_only=False,
+                           mask_function=None):
     df_bind_all = load_pdb_bind()
     df_gen = load_df_gen()
     df_bind = filter_casf(df_bind_all, df_gen, filter_out=filter_out_casf)
@@ -228,6 +233,10 @@ def load_pdb_bind_filtered(filter_out_casf=True, convert=True, ligand_only=False
     queried_pdbs = set.intersection(natom_pdbs, quality_pdbs)
     df_bind = df_bind[df_bind.PDB_ID.isin(queried_pdbs)]
     df_bind = get_within_cutoff(df_bind, distance_cutoff=DISTANCE_CUTOFF)
+    if mask_function is None:
+        df_bind['Mask'] = True
+    else:
+        df_bind = mask_function(df_bind)
     if ligand_only:
         df_bind = df_bind[df_bind.atom_kind == 'L']
     if convert:
@@ -239,10 +248,11 @@ def _get_entry(df_bind_pdb, df_gen, consts_ani2x):
     pdb = df_bind_pdb.PDB_ID.iloc[0]
     species = consts_ani2x.species_to_tensor(df_bind_pdb.element.values) #.unsqueeze(0)
     coordinates = torch.tensor(df_bind_pdb[['x','y','z']].values)
+    mask = torch.tensor(df_bind_pdb.Mask.values)
     affinity = df_gen.loc[pdb].pK
     id_ = df_gen.loc[pdb].ID
     entry = {'species': species, 'coordinates': coordinates,
-                'affinity': affinity, 'ID': id_}
+                'affinity': affinity, 'ID': id_, 'mask': mask}
     return entry
 
 def convert_to_data(df_bind, df_gen):
@@ -267,7 +277,7 @@ def get_natom_pdbs(df_bind, cutoff_quantile=0.95):
     queried_pdbs = set.intersection(ligand_pdbs, structure_pdbs)
     return queried_pdbs
 
-def get_quality_pdbs(df_gen, binding_symbols={'='}, cutoff_quantile=0.975):
+def get_quality_pdbs(df_gen, binding_symbols={'='}, cutoff_quantile=0.95):
     query_binding = df_gen.Binding_Symbol.isin(binding_symbols)
     query_r_free = df_gen.R_free < df_gen.R_free.quantile(cutoff_quantile)
     query_resolution = df_gen.Resolution < df_gen.Resolution.quantile(cutoff_quantile)
@@ -458,6 +468,7 @@ class Data(torch.utils.data.Dataset):
         self.labels: List[float] = []  # energies or affinity
         self.species: List[torch.Tensor] = []
         self.coordinates: List[torch.Tensor] = []
+        self.mask: List[torch.Tensor] = []
 
     def __len__(self) -> int:
         return self.n
@@ -472,15 +483,17 @@ class Data(torch.utils.data.Dataset):
         return (
             self.ids[idx],
             self.labels[idx],
-            (self.species[idx], self.coordinates[idx]))
+            (self.species[idx], self.coordinates[idx]),
+            self.mask[idx])
 
     def load(self, data):
         self.n = len(data)
         for entry in data:
             self.ids.append(entry['ID'])
+            self.labels.append(entry['affinity'])
             self.species.append(entry['species'])
             self.coordinates.append(entry['coordinates'])
-            self.labels.append(entry['affinity'])
+            self.mask.append(entry['mask'])
 
 def get_data_loader(dataset, batchsize=40, shuffle=True):
     out = Data()
@@ -525,18 +538,23 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
         epoch_loss: float = 0.0
 
         # Training
-        for _, labels, species_coordinates in trainloader:
+        for _, labels, species_coordinates, mask in trainloader:
 
             # Move data to device
             labels = labels.to(device).float()
             species = species_coordinates[0].to(device)
-            coordinates = species_coordinates[1].to(device).float()
+            coordinates = species_coordinates[1].to(device).float()  # converts to float32
+            mask = mask.to(device)
 
             aevs = aev_computer.forward((species, coordinates)).aevs
 
+            species_ = species.clone()
+            species_ = species_.to(device)
+            species_[~mask] = -1
+
             optimizer.zero_grad()
 
-            _, output = model((species, aevs))
+            _, output = model((species_, aevs))
 
             loss = loss_function(output, labels)
 
@@ -555,16 +573,21 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
 
             # Validation
             with torch.no_grad():
-                for _, labels, species_coordinates in testloader:
+                for _, labels, species_coordinates, mask in testloader:
 
                     # Move data to device
                     labels = labels.to(device)
                     species = species_coordinates[0].to(device)
                     coordinates = species_coordinates[1].to(device)
+                    mask = mask.to(device)
+
                     aevs = aev_computer.forward((species, coordinates)).aevs
 
-                    # Forward pass
-                    _, output = model((species, aevs))
+                    species_ = species.clone()
+                    species_ = species_.to(device)
+                    species_[~mask] = -1
+
+                    _, output = model((species_, aevs))
 
                     valid_loss += loss_function(output, labels).item()
 
