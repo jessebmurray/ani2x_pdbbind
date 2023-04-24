@@ -441,23 +441,18 @@ def get_consts_aescore():
     consts_aescore['num_species'] = 10
     return consts_aescore
 
-def pad_collate(
-    batch,
-    species_pad_value=-1,
-    coords_pad_value=0,
-    device: Optional[Union[str, torch.device]] = None,
-    ) -> Union[
-    Tuple[np.ndarray, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
-    Tuple[np.ndarray, torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-    ]:
-    ids, labels, species_and_coordinates = zip(*batch)
+def pad_collate(batch, species_pad_value=-1, coords_pad_value=0,
+                mask_pad_value=False, device= None):
+    ids, labels, species_and_coordinates, mask = zip(*batch)
     species, coordinates = zip(*species_and_coordinates)
     pad_species = torch.nn.utils.rnn.pad_sequence(
         species, batch_first=True, padding_value=species_pad_value)
     pad_coordinates = torch.nn.utils.rnn.pad_sequence(
         coordinates, batch_first=True, padding_value=coords_pad_value)
+    pad_mask = torch.nn.utils.rnn.pad_sequence(
+        mask, batch_first=True, padding_value=mask_pad_value)
     labels = torch.tensor(np.array(labels)).reshape(1, -1).squeeze(0)
-    return np.array(ids), labels, (pad_species, pad_coordinates)
+    return np.array(ids), labels, (pad_species, pad_coordinates), pad_mask
 
 
 class Data(torch.utils.data.Dataset):
