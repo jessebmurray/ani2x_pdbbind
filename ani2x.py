@@ -1,6 +1,5 @@
 import os
 import copy
-import json
 import re
 import tqdm
 import torch
@@ -9,13 +8,11 @@ import pandas as pd
 import numpy as np
 from functools import cache
 from collections import OrderedDict
-from typing import Optional, Tuple, Union, List
-from rdkit import Chem
+from typing import List
+from datetime import date
+from torch.utils.data import DataLoader
 from biopandas.mol2 import PandasMol2
 from biopandas.pdb import PandasPdb
-from torch.utils.data import DataLoader
-from torch import nn, optim
-from datetime import date
 
 DISTANCE_CUTOFF = 5.2
 N_MODELS = 8
@@ -45,20 +42,22 @@ def get_corr(x, y):
     return np.corrcoef(x, y)[0][1]
 
 def get_labels(testloader):
-    for _, labels, _ in testloader:
+    for _, labels, _, _ in testloader:
         labels = labels
     return labels.numpy()
 
 def get_model_output(model, aev_computer, testloader):
-    for _, labels, species_coordinates in testloader:
+    for _, labels, species_coordinates, mask in testloader:
         species, coordinates = species_coordinates
         aevs = aev_computer.forward((species, coordinates)).aevs
-        _, output = model((species, aevs))
+        species_ = species.clone()
+        species_[~mask] = -1
+        _, output = model((species_, aevs))
     return output.detach().numpy()
 
-def load_best_model(id_, kind):
+def load_best_model(id_, kind, name):
     assert kind in {'pre', 'rand'}
-    model_load_path = f'./results/{kind}_{id_}_best.pth'
+    model_load_path = f'./results/{name}_{kind}_{id_}_best.pth'
     model_load = load_pretrained()
     model_load_sd = torch.load(model_load_path, map_location=torch.device('cpu'))['state_dict']
     model_load.load_state_dict(model_load_sd)
@@ -66,7 +65,7 @@ def load_best_model(id_, kind):
 
 def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_percentage=0.85, name=''):
     assert kind in {'pre', 'rand'}
-    mse = nn.MSELoss()
+    mse = torch.nn.MSELoss()
     consts_ani2x = get_consts_ani2x()
     aev_computer_ani2x = get_aev_computer(consts_ani2x)
     data_training, data_validation = split_data(data, id_, train_percentage)
@@ -79,8 +78,8 @@ def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_perc
 def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, name=''):
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
     model_rands = [load_random() for _ in range(N_MODELS)]
-    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
-    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
+    optimizer_pres  = [torch.optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    optimizer_rands  = [torch.optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
     for i in range(N_MODELS):
         train_model(data, model_pres[i], optimizer_pres[i], i, 'pre',
                     batchsize, epochs, train_percentage, name=name)
@@ -89,14 +88,14 @@ def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percenta
 
 def train_pre_models(data, batchsize, epochs, lr_pre, betas, train_percentage):
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
-    optimizer_pres  = [optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    optimizer_pres  = [torch.optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
     for i in range(N_MODELS):
         train_model(data, model_pres[i], optimizer_pres[i], i, 'pre',
                     batchsize, epochs, train_percentage)
 
 def train_rand_models(data, batchsize, epochs, lr_rand, betas, train_percentage):
     model_rands = [load_random() for _ in range(N_MODELS)]
-    optimizer_rands  = [optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
+    optimizer_rands  = [torch.optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
     for i in range(N_MODELS):
         train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
                     batchsize, epochs, train_percentage)
@@ -139,21 +138,24 @@ def get_pdb_structural(pdb_structure_file):
 
 def get_pdb_entries(pdb_info_file):
     affinity_pattern = re.compile(r'(Ki|Kd|IC50)(=|~|<|<=|>|>=)\d')
+    ligand_pattern = re.compile(r'\((.*)\)+$')
     with open(pdb_info_file, 'r') as f:
         lines = f.readlines()
     entries = list()
     for line in lines[6:]:
         entry = line.split('  ')
-        entry = entry[:5]
-        a, b, c, d, e = entry
-        match_obj = affinity_pattern.match(e)
-        binding_type, binding_symbol = match_obj.group(1), match_obj.group(2)
+        a, b, c, d, e = entry[:5]
+        f = entry[-1]
+        binding_match = affinity_pattern.match(e)
+        binding_type, binding_symbol = binding_match.group(1), binding_match.group(2)
+        ligand = ligand_pattern.search(f).group(1)
         entry = {'PDB_ID': a.upper(),
                 'Resolution': float(b) if not b == ' NMR' else np.NAN,
                 'Release_Year': int(c),
                 'pK': float(d),
                 'Binding_Type': binding_type,
-                'Binding_Symbol': binding_symbol}
+                'Binding_Symbol': binding_symbol,
+                'Ligand': ligand}
         entries.append(entry)
     return pd.DataFrame(entries).set_index('PDB_ID')
 
@@ -381,6 +383,49 @@ def get_ligand_df(df_gen):
 # TORCH STUFF
 #######
 
+def get_layer_sizes():
+    layer_sizes = list()
+    layer_size = 256
+    for i in range(7, -1, -1):
+        layer_sizes.append(int(layer_size))
+        layer_size *= i / (i+1)
+    return layer_sizes
+
+def load_pretrained_frozen(id_=0,):
+    model_orig = load_pretrained(id_=id_)
+    model_new = OrderedDict()
+    consts_ani2x = get_consts_ani2x()
+    layer_sizes = get_layer_sizes()
+    n_layers_add = 2
+    for i in consts_ani2x.species:
+        # Get original neural network
+        nn_orig = model_orig[i]
+        # Freeze original
+        for parameter in nn_orig[:-1].parameters():
+            parameter.requires_grad_(False)
+        # Get the size of the last layer of the original
+        last_size = nn_orig[-1].in_features
+        # Get sizes of the layers to add
+        li = layer_sizes.index(last_size)
+        s = layer_sizes[li:li+n_layers_add+1]
+        # Make the layers to add (this is tied to 2 layers, n_layers_add = 2)
+        nn_add = torch.nn.Sequential(torch.nn.Linear(s[0], s[1]), torch.nn.CELU(alpha=0.1),
+                    torch.nn.Linear(s[1], s[2]), torch.nn.CELU(alpha=0.1),
+                    torch.nn.Linear(s[2], 1))
+        # Initialize parameters according to Meli's initialization (optional)
+        nn_add.apply(init_params)
+        # Get the new neural network
+        nn_new = torch.nn.Sequential(*nn_orig[:-1], *nn_add)
+        # Assert frozen layers
+        assert not np.array([parameter.requires_grad for parameter in nn_new[:6].parameters()]).any()
+        # Keep the last singleton layer information from the original
+        with torch.no_grad():
+            nn_new[6].weight[0] = nn_orig[-1].weight[0]
+            nn_new[6].bias[0] = nn_orig[-1].bias[0]
+        model_new[i] = nn_new
+    model_new = torchani.ANIModel(model_new)
+    return model_new
+
 def get_aev_computer(consts):
     return torchani.AEVComputer(**consts)
 
@@ -500,7 +545,7 @@ def get_data_loaders(training, validation, batchsize=40):
     validloader = get_data_loader(validation, batchsize=batchsize)
     return trainloader, validloader
 
-def savemodel(model: nn.ModuleDict, path) -> None:
+def savemodel(model: torch.nn.ModuleDict, path) -> None:
     """Save AffinityModel."""
     torch.save(
         {"state_dict": model.state_dict(),}, path,)
@@ -614,6 +659,19 @@ def train(model, optimizer, loss_function, aev_computer, trainloader, testloader
     #     mlflow.log_param("best _epoch", best_epoch)
 
     return train_losses, valid_losses
+
+def get_list(name):
+    with open(f'./losses/{name}.txt', 'r') as f:
+        lines = f.readlines()
+        lines = [float(line.rstrip('\n')) for line in lines]
+    return lines
+
+def get_losses(name, kind, train_valid, n_models=8):
+    losses = []
+    for i in range(n_models):
+        filepath = f'{train_valid}_losses{name}_{kind}_{i}'
+        losses.append(get_list(filepath))
+    return np.array(losses)
 
 def save_list(lines, name, folder='losses'):
     with open(f'./{folder}/{name}.txt', 'w+') as f:
