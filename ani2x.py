@@ -27,6 +27,7 @@ PERIODIC_TABLE = """
     """.strip().split()
 
 SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
+DISTANCE_MASK = 6
 
 consts_def = {'Rcr': 'radial cutoff',
             'Rca': 'angular cutoff',
@@ -38,8 +39,78 @@ consts_def = {'Rcr': 'radial cutoff',
             'ShfZ': 'angular shift',
             'num_species': 'number of species'}
 
+def get_quality_pdbs_sub(df_gen, binding_symbols={'='},
+                    cutoff_r_free=0.26, cutoff_resolution=2.25, cutoff_delta_r=0.06):
+    query_binding = df_gen.Binding_Symbol.isin(binding_symbols)
+    query_r_free = df_gen.R_free < cutoff_r_free
+    query_delta_r = df_gen.delta_R < cutoff_delta_r
+    query_resolution = df_gen.Resolution < cutoff_resolution
+    queries = (query_binding, query_r_free, query_resolution, query_delta_r)
+    queried_pdbs = set.intersection(*map(lambda query: set(df_gen[query].index), queries))
+    return queried_pdbs
+
+def get_natom_pdbs_sub(df_bind, natom_cutoff=1200, mask_distance=DISTANCE_MASK):
+    df_bind_mask = get_within_cutoff(df_bind, mask_distance)
+    mask_natoms = df_bind_mask.groupby('PDB_ID').element.count()
+    queried_pdbs = set((mask_natoms < natom_cutoff).index)
+    return queried_pdbs
+
+def get_low_b_factors(df_bind, b_factor_cutoff=50):
+    return df_bind.query(f'b_factor < {b_factor_cutoff} | b_factor.isna()')
+
+def apply_masks_sub(df_bind, mask_distance=DISTANCE_MASK):
+    within_cutoff = is_within_cutoff(df_bind, distance_cutoff=mask_distance)
+    df_bind['Mask'] = True
+    df_bind['Mask'] *= within_cutoff
+    df_bind['Mask'] *= df_bind.molecule_name != 'HOH'
+    return df_bind
+
+def get_pdbs_test():
+    pdbs_test = set()
+    for protein in ['HSP90', 'TRYP', 'BRD4', 'THRB']:
+        _, pdbs_protein_test = load_protein_benchmark(protein)
+        pdbs_test.update(pdbs_protein_test)
+    _, pdbs_ligand_test = load_ligand_benchmark()
+    pdbs_test.update(pdbs_ligand_test)
+    return pdbs_test
+
+def get_n_overlaps():
+    df_bind = load_pdb_bind_filtered_sub(train=False, test=False, convert=False)
+    experiment_pdbs = set(df_bind.PDB_ID)
+    proteins = ['BRD4', 'BSEC1', 'BSEC2', 'CAII', 'CDK2', 'HCRNAP',
+                'HIVPR', 'HSP90', 'MKp38', 'THRB', 'TRYP']
+    n_overlaps = {}
+    for protein in proteins:
+        _, pdbs_test = load_protein_benchmark(protein)
+        n_overlaps[protein] = len(pdbs_test.intersection(experiment_pdbs))
+    _, pdbs_test = load_ligand_benchmark()
+    n_overlaps['ligand'] = len(pdbs_test.intersection(experiment_pdbs))
+    n_overlaps = pd.Series(n_overlaps).sort_values(ascending=False)
+    return n_overlaps
+
+def load_pdb_bind_filtered_sub(train=True, test=False, convert=True, ligand_only=False,
+                           mask_function=None):
+    assert not (train and test)
+    df_bind = load_pdb_bind()
+    df_gen = load_df_gen()
+    df_bind = get_low_b_factors(df_bind)
+    quality_pdbs = get_quality_pdbs_sub(df_gen)
+    natom_pdbs = get_natom_pdbs_sub(df_bind)
+    queried_pdbs = set.intersection(natom_pdbs, quality_pdbs)
+    df_bind = df_bind[df_bind.PDB_ID.isin(queried_pdbs)]
+    df_bind = apply_masks_sub(df_bind)
+    pdbs_test = get_pdbs_test()
+    test_overlap = df_bind.PDB_ID.isin(pdbs_test)
+    if train:
+        df_bind = df_bind[~test_overlap]
+    if test:
+        df_bind = df_bind[test_overlap]
+    if convert:
+        return convert_to_data(df_bind, df_gen)
+    return df_bind
+
 def get_corr(x, y):
-    return np.corrcoef(x, y)[0][1]
+    return np.corrcoef(x, y)[0,1]
 
 def get_labels(testloader):
     for _, labels, _, _ in testloader:
@@ -110,12 +181,53 @@ def split_data(data, id_, train_percentage=0.85):
     save_list(validation_ids, f'validation_ids_{id_}', folder='splits')
     return training, validation
 
-
 ######
 # DATA HANDLING
 
+def get_gd_pdbs(df_gd):
+    return set(df_gd['key'].str.upper())
+
+def load_protein_benchmark(protein):
+    path_train = f'./data/GD-protein_benchmark/pdbbind_2020_general_cluster_{protein}_train.csv'
+    path_test = f'./data/GD-protein_benchmark/pdbbind_2020_general_cluster_{protein}_test.csv'
+    pdbs_train = get_gd_pdbs(pd.read_csv(path_train))
+    pdbs_test = get_gd_pdbs(pd.read_csv(path_test))
+    return pdbs_train, pdbs_test
+
+def load_ligand_benchmark():
+    path_train = './data/GD-ligand_benchmark/0_ligand_benchmark_subsampled_train.csv'
+    path_test = './data/GD-ligand_benchmark/0_ligand_benchmark_subsampled_test.csv'
+    pdbs_train = get_gd_pdbs(pd.read_csv(path_train))
+    pdbs_test = get_gd_pdbs(pd.read_csv(path_test))
+    return pdbs_train, pdbs_test
+
+def create_atom_name_guide(save=True):
+    dfc = pd.read_csv('./data/atom_name_elements.csv', index_col=0)
+    assert dfc.groupby(['atom_name', 'molecule_name']).element.nunique().max() == 1
+    fails_an = set(dfc.groupby(['atom_name', 'molecule_name']).element.nunique()[dfc.groupby(['atom_name', 'molecule_name']).element.nunique() == 0].reset_index().atom_name)
+    fails_mn = set(dfc.groupby(['atom_name', 'molecule_name']).element.nunique()[dfc.groupby(['atom_name', 'molecule_name']).element.nunique() == 0].reset_index().molecule_name)
+    dfcf = dfc.groupby(['atom_name', 'molecule_name']).element.nunique()[dfc.groupby(['atom_name', 'molecule_name']).element.nunique() == 0].reset_index()
+    assert set(dfcf.molecule_name) == {'STA'}
+    dfcf['element'] = dfcf.atom_name.map(lambda name: name[0])
+    dfg = dfc.dropna().groupby(['atom_name', 'molecule_name']).element.unique().explode().reset_index()
+    dfg = pd.concat([dfg, dfcf]).reset_index(drop=True)
+    if save:
+        dfg.to_csv('./data/pdb_atom_name_guide-backup.csv', index=False)
+    return dfg
+
+def add_elements_pdbbind_protein(save=True):
+    df_bind = pd.read_csv('../Data/pdbbind_protein-backup_2023_04_28.csv',
+                      dtype={'PDB_ID': str, 'element': str, 'chain_id': str})
+    dfg = pd.read_csv('./data/pdb_atom_name_guide.csv')
+    dfg_dict = dfg.set_index(['atom_name', 'molecule_name']).element.to_dict()
+    element_fill = df_bind.set_index(['atom_name', 'molecule_name']).index.map(lambda pair: dfg_dict.get(pair, np.nan))
+    df_bind['element'] = df_bind['element'].fillna(pd.Series(element_fill))
+    if save:
+        df_bind.to_csv('../Data/pdbbind_protein_elements-backup.csv', index=False)
+    return df_bind
+
 def load_casf():
-    with open('casf.txt', 'r') as f:
+    with open('./data/casf.txt', 'r') as f:
         casf = f.readlines()
     casf = set([entry.rstrip('\n').upper() for entry in casf])
     return casf
@@ -185,7 +297,8 @@ def load_df_gen():
 
 def save_pdb_bind():
     n_files = 6
-    pdb_bind_path = '../Data/pdbbind_pocket.csv'
+    # pdb_bind_path = '../Data/pdbbind_pocket.csv'
+    pdb_bind_path = '../Data/pdbbind_protein_elements_12A_ani2xspecies_refined.csv'
     df_bind = pd.read_csv(pdb_bind_path)
     n_interval = df_bind.shape[0] // n_files
     s = np.arange(0, n_interval*n_files, n_interval)
@@ -195,26 +308,39 @@ def save_pdb_bind():
     df_bind_4 = df_bind[s[3]: s[4]]
     df_bind_5 = df_bind[s[4]: s[5]]
     df_bind_6 = df_bind[s[5]: ]
-    df_bind_1.to_csv('./data/pdb_bind_pocket_1.csv', index=False)
-    df_bind_2.to_csv('./data/pdb_bind_pocket_2.csv', index=False)
-    df_bind_4.to_csv('./data/pdb_bind_pocket_4.csv', index=False)
-    df_bind_3.to_csv('./data/pdb_bind_pocket_3.csv', index=False)
-    df_bind_5.to_csv('./data/pdb_bind_pocket_5.csv', index=False)
-    df_bind_6.to_csv('./data/pdb_bind_pocket_6.csv', index=False)
+    df_bind_1.to_csv('./data/pdb_bind_sub_1.csv', index=False)
+    df_bind_2.to_csv('./data/pdb_bind_sub_2.csv', index=False)
+    df_bind_4.to_csv('./data/pdb_bind_sub_4.csv', index=False)
+    df_bind_3.to_csv('./data/pdb_bind_sub_3.csv', index=False)
+    df_bind_5.to_csv('./data/pdb_bind_sub_5.csv', index=False)
+    df_bind_6.to_csv('./data/pdb_bind_sub_6.csv', index=False)
 
 def load_pdb_bind():
     n_files = 6
     dataframes = []
     for i in range(n_files):
         file_number = i + 1
-        file_path = f'./data/pdb_bind_pocket_{file_number}.csv'
+        # file_path = f'./data/pdb_bind_pocket_{file_number}.csv'
+        file_path = f'./data/pdb_bind_sub_{file_number}.csv'
         dataframes.append(pd.read_csv(file_path))
     df_bind = pd.concat(dataframes)
     df_bind = df_bind.astype({'x': 'float32', 'y': 'float32', 'z': 'float32'})
     return df_bind
 
+def make_subset(df_bind, df_gen, save=True):
+    df_bind = get_within_cutoff(df_bind, distance_cutoff=12)
+    if save:
+        df_bind.to_csv('../Data/pdbbind_protein_elements_12A-backup.csv', index=False)
+    df_bind = restrict_to_species(df_bind, species=SPECIES_ANI2X)
+    df_bind = restrict_to_refined(df_bind, df_gen)
+    df_bind = df_bind.drop(columns=['atom_name', 'chain_id', 'residue_number',
+                        'insertion', 'occupancy', 'blank_4', 'line_idx', 'element2'])
+    if save:
+        df_bind.to_csv('../Data/pdbbind_protein_elements_12A_ani2xspecies_refined-backup.csv', index=False)
+    return df_bind
+
 def filter_casf(df_bind, df_gen, filter_out=True):
-    casf_2016 = set(df_gen[df_gen.CASF_2016].index)
+    casf_2016 = set(df_gen.query('CASF_2016').index)
     within_casf = df_bind.PDB_ID.isin(casf_2016)
     if filter_out:
         return df_bind[~within_casf]
@@ -223,6 +349,16 @@ def filter_casf(df_bind, df_gen, filter_out=True):
 def mask_ligands(df_bind):
     df_bind['Mask'] = df_bind.atom_kind == 'L'
     return df_bind
+
+def get_gd_pdbs(df_gd):
+    return set(df_gd['key'].str.upper())
+
+def load_ligand_benchmark():
+    path_train = './data/GD-ligand_benchmark/0_ligand_benchmark_subsampled_train.csv'
+    path_test = './data/GD-ligand_benchmark/0_ligand_benchmark_subsampled_test.csv'
+    pdbs_train = get_gd_pdbs(pd.read_csv(path_train))
+    pdbs_test = get_gd_pdbs(pd.read_csv(path_test))
+    return pdbs_train, pdbs_test
 
 def load_pdb_bind_filtered(filter_out_casf=True, convert=True, ligand_only=False,
                            mask_function=None):
@@ -240,7 +376,7 @@ def load_pdb_bind_filtered(filter_out_casf=True, convert=True, ligand_only=False
     else:
         df_bind = mask_function(df_bind)
     if ligand_only:
-        df_bind = df_bind[df_bind.atom_kind == 'L']
+        df_bind = df_bind.query("atom_kind == 'L'")
     if convert:
         data = convert_to_data(df_bind, df_gen)
         return data
@@ -263,7 +399,7 @@ def convert_to_data(df_bind, df_gen):
     return data
 
 def filter_casf(df_bind, df_gen, filter_out=True):
-    casf_2016 = set(df_gen[df_gen.CASF_2016].index)
+    casf_2016 = set(df_gen.query('CASF_2016').index)
     within_casf = df_bind.PDB_ID.isin(casf_2016)
     if filter_out:
         return df_bind[~within_casf]
@@ -287,6 +423,10 @@ def get_quality_pdbs(df_gen, binding_symbols={'='}, cutoff_quantile=0.95):
     queried_pdbs = set.intersection(*map(lambda query: set(df_gen[query].index), queries))
     return queried_pdbs
 
+def restrict_to_refined(df_bind, df_gen):
+    refined_pdbs = set(df_gen.query('Refined').index)
+    return df_bind[df_bind.PDB_ID.isin(refined_pdbs)]
+
 def restrict_to_species(df_bind, species):
     pdb_in_species = df_bind.groupby('PDB_ID').element.apply(lambda element_list: set(element_list).issubset(species))
     valid_pdbs = set(pdb_in_species[pdb_in_species].index)
@@ -307,10 +447,13 @@ def _check_if_within(df_bind_pdb, ligand_cutoffs):
     less_than_max = (df_bind_pdb[['x', 'y', 'z']] < ligand_cutoffs.loc[pdb].Max).all(axis=1)
     return greater_than_min  & less_than_max
 
-def get_within_cutoff(df_bind, distance_cutoff):
+def is_within_cutoff(df_bind, distance_cutoff):
     ligand_cutoffs = get_ligand_cutoffs(df_bind, distance_cutoff)
-    within_cutoff = df_bind.groupby('PDB_ID').apply(lambda df_bind_pdb: _check_if_within(df_bind_pdb, ligand_cutoffs))
-    return df_bind[within_cutoff.values]
+    return df_bind.groupby('PDB_ID').apply(lambda df_bind_pdb: _check_if_within(df_bind_pdb, ligand_cutoffs)).values
+
+def get_within_cutoff(df_bind, distance_cutoff):
+    within_cutoff = is_within_cutoff(df_bind, distance_cutoff)
+    return df_bind[within_cutoff]
 
 def get_file(pdb, kind, df_gen, file_type='pocket'):
     assert file_type in {'pocket', 'protein'}
@@ -323,26 +466,28 @@ def get_file(pdb, kind, df_gen, file_type='pocket'):
     return file
 
 def get_pdbbind(file_type='pocket', save=True):
+    assert file_type in {'pocket', 'protein'}
     df_gen = get_df_gen()
-    df_hetatm = get_pdb_df(atom_kind='hetatm', df_gen=df_gen, file_type='pocket')
-    df_protein = get_pdb_df(atom_kind='protein', df_gen=df_gen, file_type='pocket')
+    df_hetatm = get_pdb_df(atom_kind='hetatm', df_gen=df_gen, file_type=file_type)
+    df_protein = get_pdb_df(atom_kind='protein', df_gen=df_gen, file_type=file_type)
     df_ligand = get_ligand_df(df_gen)
     df_bind = pd.concat([df_ligand, df_protein, df_hetatm])
     df_bind = df_bind[df_bind.PDB_ID != '2W73']
     df_bind = df_bind.sort_values(by=['PDB_ID', 'atom_kind', 'atom_number'])
     if save:
         todays_date = date.today().strftime("%Y_%m_%d")
-        filename = f'../Data/pdbbind_pocket-backup_{todays_date}.csv'
+        filename = f'../Data/pdbbind_{file_type}-backup_{todays_date}.csv'
         df_bind.to_csv(filename, index=False)
     return df_bind
 
 def _drop_empty_columns(df):
-    dropped_cols = set(df.nunique()[df.nunique() <= 1].index) - {'atom_kind'}
+    dropped_cols = set(df.nunique()[df.nunique() <= 1].index) # - {'atom_kind'}
     df_updated = df.drop(columns=dropped_cols)
     return df_updated
 
 def get_pdb_df(atom_kind, df_gen, file_type='pocket'):
     assert atom_kind in {'protein', 'hetatm'}
+    assert file_type in {'pocket', 'protein'}
     ppdb_key = {'protein': 'ATOM', 'hetatm': 'HETATM'}
     atom_kind_key = {'protein': 'P', 'hetatm': 'H'}
     dfs = []
@@ -352,10 +497,10 @@ def get_pdb_df(atom_kind, df_gen, file_type='pocket'):
         df['PDB_ID'] = pdb_id
         dfs.append(df)
     df = pd.concat(dfs)
-    df['atom_kind'] = atom_kind_key[atom_kind]
     df = _drop_empty_columns(df)
-    drop_columns = ['atom_name', 'chain_id', 'residue_number', 'insertion', 'line_idx']
-    df.drop(columns=drop_columns, inplace=True)
+    df['atom_kind'] = atom_kind_key[atom_kind]
+    # drop_columns = ['atom_name', 'chain_id', 'residue_number', 'insertion', 'line_idx']
+    # df.drop(columns=drop_columns, inplace=True)
     df.element_symbol = df.element_symbol.str.capitalize()
     df.rename(columns={'element_symbol': 'element', 'residue_name': 'molecule_name',
                         'x_coord': 'x', 'y_coord': 'y', 'z_coord': 'z'}, inplace=True)
@@ -678,3 +823,4 @@ def save_list(lines, name, folder='losses'):
         for line in lines:
             f.write(f"{line}\n")
 
+# df_bind.groupby(['atom_name', 'molecule_name', 'atom_kind']).element.value_counts(dropna=False).to_frame().rename(columns={'element': 'count'}).reset_index().to_csv('../Data/atom_name_elements.csv')
