@@ -3,7 +3,7 @@
 #SBATCH --ntasks=1                      # 1 tasks
 #SBATCH --gres=gpu:1                    # number of gpus
 #SBATCH --gpus-per-task=1               # number of gpus per task
-#SBATCH --cpus-per-gpu=3                # number of cores per gpu
+#SBATCH --cpus-per-gpu=2                # number of cores per gpu
 #SBATCH --mem-per-cpu=20000             # memory/cpu (in MB)
 #SBATCH -J gen_frozen
 #SBATCH --mail-user=jesse.murray@stats.ox.ac.uk
