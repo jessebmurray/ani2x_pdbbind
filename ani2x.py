@@ -38,6 +38,9 @@ consts_def = {'Rcr': 'radial cutoff',
             'ShfZ': 'angular shift',
             'num_species': 'number of species'}
 
+def get_lr(batchsize):
+    return 0.5 * 1e-5 * np.sqrt(batchsize / 40)
+
 def get_quality_pdbs_sub(df_gen, binding_symbols={'='},
                     cutoff_r_free=0.26, cutoff_resolution=2.25, cutoff_delta_r=0.06):
     query_binding = df_gen.Binding_Symbol.isin(binding_symbols)
