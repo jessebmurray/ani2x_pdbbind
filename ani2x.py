@@ -49,10 +49,10 @@ def get_quality_pdbs_sub(df_gen, binding_symbols={'='},
     queried_pdbs = set.intersection(*map(lambda query: set(df_gen[query].index), queries))
     return queried_pdbs
 
-def get_natom_pdbs_sub(df_bind, natom_cutoff=1200, mask_distance=DISTANCE_MASK):
+def get_natom_pdbs_sub(df_bind, natom_cutoff=1300, mask_distance=DISTANCE_MASK):
     df_bind_mask = get_within_cutoff(df_bind, mask_distance)
     mask_natoms = df_bind_mask.groupby('PDB_ID').element.count()
-    queried_pdbs = set((mask_natoms < natom_cutoff).index)
+    queried_pdbs = set((mask_natoms[mask_natoms < natom_cutoff]).index)
     return queried_pdbs
 
 def get_low_b_factors(df_bind, b_factor_cutoff=50):
@@ -61,8 +61,8 @@ def get_low_b_factors(df_bind, b_factor_cutoff=50):
 def apply_masks_sub(df_bind, mask_distance=DISTANCE_MASK):
     within_cutoff = is_within_cutoff(df_bind, distance_cutoff=mask_distance)
     df_bind['Mask'] = True
-    df_bind['Mask'] *= within_cutoff
-    df_bind['Mask'] *= df_bind.molecule_name != 'HOH'
+    df_bind['Mask'] = df_bind['Mask'] & within_cutoff
+    df_bind['Mask'] = df_bind['Mask'] & (df_bind.molecule_name != 'HOH')
     return df_bind
 
 def get_train(df_bind, df_gen):
