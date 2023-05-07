@@ -420,6 +420,10 @@
 
 ###################
 
-
+# cm = df_bind.query('Mask').element.value_counts()
+# c = df_bind.element.value_counts()
+# p = pd.Series(c.index.map(lambda el: sum([t.numel() for t in model_pre[el][6:].state_dict().values()])), index=c.index)
+# c / p
+# cm / p
 
 ###################

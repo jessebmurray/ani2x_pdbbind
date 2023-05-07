@@ -65,14 +65,25 @@ def apply_masks_sub(df_bind, mask_distance=DISTANCE_MASK):
     df_bind['Mask'] *= df_bind.molecule_name != 'HOH'
     return df_bind
 
-def get_pdbs_test():
+def get_train(df_bind, df_gen):
+    pdbs_train = set(df_gen.index)
+    for protein in ['HSP90', 'TRYP', 'BRD4', 'THRB']:
+        pdbs_protein_train, _ = load_protein_benchmark(protein)
+        pdbs_train = pdbs_train.intersection(pdbs_protein_train)
+    pdbs_ligand_train, _ = load_ligand_benchmark()
+    pdbs_train = pdbs_train.intersection(pdbs_ligand_train)
+    train_overlap = df_bind.PDB_ID.isin(pdbs_train)
+    return df_bind[train_overlap]
+
+def get_test(df_bind):
     pdbs_test = set()
     for protein in ['HSP90', 'TRYP', 'BRD4', 'THRB']:
         _, pdbs_protein_test = load_protein_benchmark(protein)
         pdbs_test.update(pdbs_protein_test)
     _, pdbs_ligand_test = load_ligand_benchmark()
     pdbs_test.update(pdbs_ligand_test)
-    return pdbs_test
+    test_overlap = df_bind.PDB_ID.isin(pdbs_test)
+    return df_bind[test_overlap]
 
 def get_n_overlaps():
     df_bind = load_pdb_bind_filtered_sub(train=False, test=False, convert=False)
@@ -88,8 +99,7 @@ def get_n_overlaps():
     n_overlaps = pd.Series(n_overlaps).sort_values(ascending=False)
     return n_overlaps
 
-def load_pdb_bind_filtered_sub(train=True, test=False, convert=True, ligand_only=False,
-                           mask_function=None):
+def load_pdb_bind_filtered_sub(train=True, test=False, convert=True):
     assert not (train and test)
     df_bind = load_pdb_bind()
     df_gen = load_df_gen()
@@ -99,12 +109,10 @@ def load_pdb_bind_filtered_sub(train=True, test=False, convert=True, ligand_only
     queried_pdbs = set.intersection(natom_pdbs, quality_pdbs)
     df_bind = df_bind[df_bind.PDB_ID.isin(queried_pdbs)]
     df_bind = apply_masks_sub(df_bind)
-    pdbs_test = get_pdbs_test()
-    test_overlap = df_bind.PDB_ID.isin(pdbs_test)
     if train:
-        df_bind = df_bind[~test_overlap]
+        df_bind = get_train(df_bind, df_gen)
     if test:
-        df_bind = df_bind[test_overlap]
+        df_bind = get_test(df_bind)
     if convert:
         return convert_to_data(df_bind, df_gen)
     return df_bind
@@ -146,6 +154,18 @@ def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_perc
     save_list(train_losses, f'train_losses_{name}_{kind}_{id_}')
     save_list(valid_losses, f'valid_losses_{name}_{kind}_{id_}')
 
+def _get_grad_params(parameters):
+    return (p for p in parameters if p.requires_grad)
+
+def train_frozen_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, p_dropout=0.4, name=''):
+    model_pres = [load_pretrained_frozen(id_=i, p_dropout=p_dropout) for i in range(N_MODELS)]
+    optimizer_pres  = [torch.optim.Adam(_get_grad_params(model_pres[i].parameters()), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    model_rands = [load_random() for _ in range(N_MODELS)]
+    optimizer_rands  = [torch.optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre', batchsize, epochs, train_percentage, name=name)
+        train_model(data, model_rands[i], optimizer_rands[i], i, 'rand', batchsize, epochs, train_percentage, name=name)
+
 def train_models(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, name=''):
     model_pres = [load_pretrained(id_=i) for i in range(N_MODELS)]
     model_rands = [load_random() for _ in range(N_MODELS)]
@@ -171,14 +191,17 @@ def train_rand_models(data, batchsize, epochs, lr_rand, betas, train_percentage)
         train_model(data, model_rands[i], optimizer_rands[i], i, 'rand',
                     batchsize, epochs, train_percentage)
 
-def split_data(data, id_, train_percentage=0.85):
+def split_data(data, id_, train_percentage=0.85, fixed_seed=True):
     train_size = int(train_percentage * len(data))
     test_size = len(data) - train_size
+    if fixed_seed:
+        torch.manual_seed(id_)
     training, validation = torch.utils.data.random_split(data, [train_size, test_size])
-    training_ids = [entry['ID'] for entry in training]
-    validation_ids = [entry['ID'] for entry in validation]
-    save_list(training_ids, f'training_ids_{id_}', folder='splits')
-    save_list(validation_ids, f'validation_ids_{id_}', folder='splits')
+    if not fixed_seed:
+        training_ids = [entry['ID'] for entry in training]
+        validation_ids = [entry['ID'] for entry in validation]
+        save_list(training_ids, f'training_ids_{id_}', folder='splits')
+        save_list(validation_ids, f'validation_ids_{id_}', folder='splits')
     return training, validation
 
 ######
@@ -536,7 +559,7 @@ def get_layer_sizes():
         layer_size *= i / (i+1)
     return layer_sizes
 
-def load_pretrained_frozen(id_=0,):
+def load_pretrained_frozen(id_=0, p_dropout=0.4):
     model_orig = load_pretrained(id_=id_)
     model_new = OrderedDict()
     consts_ani2x = get_consts_ani2x()
@@ -554,8 +577,9 @@ def load_pretrained_frozen(id_=0,):
         li = layer_sizes.index(last_size)
         s = layer_sizes[li:li+n_layers_add+1]
         # Make the layers to add (this is tied to 2 layers, n_layers_add = 2)
-        nn_add = torch.nn.Sequential(torch.nn.Linear(s[0], s[1]), torch.nn.CELU(alpha=0.1),
-                    torch.nn.Linear(s[1], s[2]), torch.nn.CELU(alpha=0.1),
+        nn_add = torch.nn.Sequential(
+                    torch.nn.Linear(s[0], s[1]), torch.nn.CELU(alpha=0.1), torch.nn.Dropout(p_dropout),
+                    torch.nn.Linear(s[1], s[2]), torch.nn.CELU(alpha=0.1), torch.nn.Dropout(p_dropout),
                     torch.nn.Linear(s[2], 1))
         # Initialize parameters according to Meli's initialization (optional)
         nn_add.apply(init_params)
