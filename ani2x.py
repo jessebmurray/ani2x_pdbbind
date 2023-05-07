@@ -15,6 +15,8 @@ from biopandas.mol2 import PandasMol2
 from biopandas.pdb import PandasPdb
 
 DISTANCE_CUTOFF = 5.2
+DISTANCE_MASK = 5
+SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
 N_MODELS = 8
 PERIODIC_TABLE = """
     H                                                                                                                           He
@@ -25,9 +27,6 @@ PERIODIC_TABLE = """
     Cs  Ba  La  Ce  Pr  Nd  Pm  Sm  Eu  Gd  Tb  Dy  Ho  Er  Tm  Yb  Lu  Hf  Ta  W   Re  Os  Ir  Pt  Au  Hg  Tl  Pb  Bi  Po  At  Rn
     Fr  Ra  Ac  Th  Pa  U   Np  Pu  Am  Cm  Bk  Cf  Es  Fm  Md  No  Lr  Rf  Db  Sg  Bh  Hs  Mt  Ds  Rg  Cn  Nh  Fl  Mc  Lv  Ts  Og
     """.strip().split()
-
-SPECIES_ANI2X = {'H', 'C', 'N', 'O', 'S', 'F', 'Cl'}
-DISTANCE_MASK = 6
 
 consts_def = {'Rcr': 'radial cutoff',
             'Rca': 'angular cutoff',
@@ -49,17 +48,16 @@ def get_quality_pdbs_sub(df_gen, binding_symbols={'='},
     queried_pdbs = set.intersection(*map(lambda query: set(df_gen[query].index), queries))
     return queried_pdbs
 
-def get_natom_pdbs_sub(df_bind, natom_cutoff=1300, mask_distance=DISTANCE_MASK):
-    df_bind_mask = get_within_cutoff(df_bind, mask_distance)
-    mask_natoms = df_bind_mask.groupby('PDB_ID').element.count()
-    queried_pdbs = set((mask_natoms[mask_natoms < natom_cutoff]).index)
+def get_natom_pdbs_sub(df_bind, natom_cutoff=2_400):
+    natoms = df_bind.groupby('PDB_ID').element.count()
+    queried_pdbs = set((natoms[natoms < natom_cutoff]).index)
     return queried_pdbs
 
 def get_low_b_factors(df_bind, b_factor_cutoff=50):
     return df_bind.query(f'b_factor < {b_factor_cutoff} | b_factor.isna()')
 
-def apply_masks_sub(df_bind, mask_distance=DISTANCE_MASK):
-    within_cutoff = is_within_cutoff(df_bind, distance_cutoff=mask_distance)
+def apply_masks_sub(df_bind, distance_mask=DISTANCE_MASK):
+    within_cutoff = is_within_cutoff(df_bind, distance_cutoff=distance_mask)
     df_bind['Mask'] = True
     df_bind['Mask'] = df_bind['Mask'] & within_cutoff
     df_bind['Mask'] = df_bind['Mask'] & (df_bind.molecule_name != 'HOH')
@@ -109,6 +107,7 @@ def load_pdb_bind_filtered_sub(train=True, test=False, convert=True):
     queried_pdbs = set.intersection(natom_pdbs, quality_pdbs)
     df_bind = df_bind[df_bind.PDB_ID.isin(queried_pdbs)]
     df_bind = apply_masks_sub(df_bind)
+    df_bind = get_within_cutoff(df_bind, distance_cutoff=DISTANCE_MASK+DISTANCE_CUTOFF)
     if train:
         df_bind = get_train(df_bind, df_gen)
     if test:
