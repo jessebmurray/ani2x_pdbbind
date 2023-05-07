@@ -3,8 +3,9 @@
 #SBATCH --ntasks=1                      # 1 tasks
 #SBATCH --gres=gpu:1                    # number of gpus
 #SBATCH --gpus-per-task=1               # number of gpus per task
-#SBATCH --cpus-per-gpu=1                # number of cores per gpu
-#SBATCH --mem-per-cpu=10000             # memory/cpu (in MB)
+#SBATCH --cpus-per-gpu=2                # number of cores per gpu
+#SBATCH --mem-per-cpu=20000             # memory/cpu (in MB)
+#SBATCH --mem-per-gpu=24000             # memory/gpu (in MB)
 #SBATCH -J gen_frozen
 #SBATCH --mail-user=jesse.murray@stats.ox.ac.uk
 #S BATCH --nodelist=nagagpu02.cpu.stats.ox.ac.uk
