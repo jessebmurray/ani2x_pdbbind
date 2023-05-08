@@ -136,13 +136,29 @@ def get_model_output(model, aev_computer, testloader):
         _, output = model((species_, aevs))
     return output.detach().numpy()
 
-def load_best_model(id_, kind, name):
+def load_best_model(id_, kind, name, progressive=False, eval=False):
     assert kind in {'pre', 'rand'}
     model_load_path = f'./results/{name}_{kind}_{id_}_best.pth'
-    model_load = load_pretrained()
+    if progressive:
+        model_load = load_pretrained_frozen()
+    else:
+        model_load = load_pretrained()
     model_load_sd = torch.load(model_load_path, map_location=torch.device('cpu'))['state_dict']
     model_load.load_state_dict(model_load_sd)
+    if eval:
+        model_load.eval()
+    else:
+        model_load.train()
     return model_load
+
+def train_frozen_models_cont(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, p_dropout=0.4, name=''):
+    model_pres = [load_best_model(id_=i, kind='pre', name='gen_frozen', progressive=True, eval=False) for i in range(N_MODELS)]
+    model_rands = [load_best_model(id_=i, kind='rand',  name='gen_frozen', progressive=False, eval=False) for i in range(N_MODELS)]
+    optimizer_pres  = [torch.optim.Adam(_get_grad_params(model_pres[i].parameters()), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    optimizer_rands  = [torch.optim.Adam(model_rands[i].parameters(), lr=lr_rand, betas=betas) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre', batchsize, epochs, train_percentage, name=name)
+        train_model(data, model_rands[i], optimizer_rands[i], i, 'rand', batchsize, epochs, train_percentage, name=name)
 
 def train_model(data, model, optimizer, id_, kind, batchsize, epochs, train_percentage=0.85, name=''):
     assert kind in {'pre', 'rand'}
