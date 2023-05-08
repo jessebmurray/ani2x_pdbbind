@@ -840,7 +840,7 @@ def get_list(name):
 def get_losses(name, kind, train_valid, n_models=8):
     losses = []
     for i in range(n_models):
-        filepath = f'{train_valid}_losses{name}_{kind}_{i}'
+        filepath = f'{train_valid}_losses_{name}_{kind}_{i}'
         losses.append(get_list(filepath))
     return np.array(losses)
 
