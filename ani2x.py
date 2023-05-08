@@ -38,6 +38,9 @@ consts_def = {'Rcr': 'radial cutoff',
             'ShfZ': 'angular shift',
             'num_species': 'number of species'}
 
+def mse(outputs, labels):
+    return np.square(outputs.mean(axis=0) - labels).mean()
+
 def get_lr(batchsize):
     return 0.5 * 1e-5 * np.sqrt(batchsize / 40)
 
@@ -150,6 +153,13 @@ def load_best_model(id_, kind, name, progressive=False, eval=False):
     else:
         model_load.train()
     return model_load
+
+def train_frozen_models_cont(data, batchsize, epochs, lr_pre, betas, train_percentage, name=''):
+    model_pres = [load_best_model(id_=i, kind='pre', name='gen_frozen', progressive=True, eval=False) for i in range(N_MODELS)]
+    optimizer_pres  = [torch.optim.Adam(_get_grad_params(model_pres[i].parameters()), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    for i in range(N_MODELS):
+        train_model(data, model_pres[i], optimizer_pres[i], i, 'pre', batchsize, epochs, train_percentage, name=name)
+
 
 def train_frozen_models_cont(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, p_dropout=0.4, name=''):
     model_pres = [load_best_model(id_=i, kind='pre', name='gen_frozen', progressive=True, eval=False) for i in range(N_MODELS)]
