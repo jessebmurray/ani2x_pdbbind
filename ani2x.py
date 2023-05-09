@@ -154,12 +154,19 @@ def load_best_model(id_, kind, name, progressive=False, eval=False):
         model_load.train()
     return model_load
 
-def train_frozen_models_cont(data, batchsize, epochs, lr_pre, betas, train_percentage, name=''):
+def unfreeze_model(model):
+    for i in model:
+        nn = model[i]
+        for parameter in nn.parameters():
+            parameter.requires_grad_(True)
+
+def finetune_frozen_models(data, batchsize, epochs, lr_pre, betas, train_percentage, name=''):
     model_pres = [load_best_model(id_=i, kind='pre', name='gen_frozen', progressive=True, eval=False) for i in range(N_MODELS)]
-    optimizer_pres  = [torch.optim.Adam(_get_grad_params(model_pres[i].parameters()), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
+    for model in model_pres:
+        unfreeze_model(model)
+    optimizer_pres  = [torch.optim.Adam(model_pres[i].parameters(), lr=lr_pre, betas=betas) for i in range(N_MODELS)]
     for i in range(N_MODELS):
         train_model(data, model_pres[i], optimizer_pres[i], i, 'pre', batchsize, epochs, train_percentage, name=name)
-
 
 def train_frozen_models_cont(data, batchsize, epochs, lr_pre, lr_rand, betas, train_percentage, p_dropout=0.4, name=''):
     model_pres = [load_best_model(id_=i, kind='pre', name='gen_frozen', progressive=True, eval=False) for i in range(N_MODELS)]
