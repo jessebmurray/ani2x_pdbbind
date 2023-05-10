@@ -179,7 +179,7 @@ def get_model_output(model, aev_computer, testloader):
             species_ = species_.to(device)
             species_[~mask] = -1
             _, output = model((species_, aevs))
-            outputs[i] = output.detach().numpy()
+            outputs[i] = output.detach().cpu().numpy()
     return outputs
 
 def load_best_model(id_, kind, name, progressive=False, eval=False):
