@@ -38,6 +38,36 @@ consts_def = {'Rcr': 'radial cutoff',
             'ShfZ': 'angular shift',
             'num_species': 'number of species'}
 
+def get_data_loader_protein_ligand(df_bind, df_gen):
+    data_pl = convert_to_data(df_bind, df_gen)
+    n = len(data_pl)
+    data_pl = get_data_loader(dataset=data_pl, batchsize=1, shuffle=False)
+    return data_pl
+
+def get_data_loader_ligand(df_bind, df_gen):
+    df_bind_l = df_bind.query("atom_kind != 'P'")
+    data_l = convert_to_data(df_bind_l, df_gen)
+    n = len(data_l)
+    data_l = get_data_loader(dataset=data_l, batchsize=1, shuffle=False)
+    return data_l
+
+def get_data_loader_protein(df_bind, df_gen):
+    df_bind_p = df_bind.query("atom_kind != 'L'")
+    data_p = convert_to_data(df_bind_p, df_gen)
+    n = len(data_p)
+    data_p = get_data_loader(dataset=data_p, batchsize=1, shuffle=False)
+    return data_p
+
+def apply_masks_compare(df_bind, distance_mask=6.5):
+    # Begin by masking all atoms
+    df_bind['Mask'] = True
+    # Exclude atoms outside of the cutoff distance
+    within_cutoff = is_within_cutoff(df_bind, distance_cutoff=distance_mask)
+    df_bind['Mask'] &= within_cutoff
+    # Exclude heteroatoms
+    df_bind['Mask'] &= df_bind.atom_kind.isin({'P', 'L'})
+    return df_bind
+
 def mse(outputs, labels):
     return np.square(outputs.mean(axis=0) - labels).mean()
 
@@ -131,13 +161,15 @@ def get_labels(testloader):
     return labels.numpy()
 
 def get_model_output(model, aev_computer, testloader):
-    for _, labels, species_coordinates, mask in testloader:
+    outputs = np.zeros(len(testloader))
+    for i, (_, labels, species_coordinates, mask) in enumerate(testloader):
         species, coordinates = species_coordinates
         aevs = aev_computer.forward((species, coordinates)).aevs
         species_ = species.clone()
         species_[~mask] = -1
         _, output = model((species_, aevs))
-    return output.detach().numpy()
+        outputs[i] = output.detach().numpy()
+    return outputs
 
 def load_best_model(id_, kind, name, progressive=False, eval=False):
     assert kind in {'pre', 'rand'}
@@ -374,6 +406,7 @@ def save_pdb_bind():
     df_bind_6.to_csv('./data/pdb_bind_sub_6.csv', index=False)
 
 def load_pdb_bind():
+    """Now pulls ANI2x Species (12A) and Refined set intersection."""
     n_files = 6
     dataframes = []
     for i in range(n_files):
