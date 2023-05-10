@@ -161,14 +161,25 @@ def get_labels(testloader):
     return labels.numpy()
 
 def get_model_output(model, aev_computer, testloader):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    model.to(device)
+    aev_computer.to(device)
     outputs = np.zeros(len(testloader))
-    for i, (_, labels, species_coordinates, mask) in enumerate(testloader):
-        species, coordinates = species_coordinates
-        aevs = aev_computer.forward((species, coordinates)).aevs
-        species_ = species.clone()
-        species_[~mask] = -1
-        _, output = model((species_, aevs))
-        outputs[i] = output.detach().numpy()
+    with torch.no_grad():
+        for i, (_, labels, species_coordinates, mask) in enumerate(testloader):
+            # Move data to device
+            labels = labels.to(device)
+            species = species_coordinates[0].to(device)
+            coordinates = species_coordinates[1].to(device)
+            mask = mask.to(device)
+            aevs = aev_computer.forward((species, coordinates)).aevs
+            species_ = species.clone()
+            species_ = species_.to(device)
+            species_[~mask] = -1
+            _, output = model((species_, aevs))
+            outputs[i] = output.detach().numpy()
     return outputs
 
 def load_best_model(id_, kind, name, progressive=False, eval=False):
