@@ -5,7 +5,7 @@
 #SBATCH --gpus-per-task=1               # number of gpus per task
 #SBATCH --cpus-per-gpu=1                # number of cores per gpu
 #SBATCH --mem-per-cpu=10000             # memory/cpu (in MB)
-#SBATCH -J ani2x_refined
+#SBATCH -J ani2x_refined_lig
 #SBATCH --mail-user=jesse.murray@stats.ox.ac.uk
 #S BATCH --nodelist=nagagpu02.cpu.stats.ox.ac.uk
 #SBATCH --clusters srf_gpu_01 -w nagagpu02.cpu.stats.ox.ac.uk
@@ -19,4 +19,4 @@ source ~/.bashrc
 
 conda activate
 
-python /data/localhost/not-backed-up/jemurray/ani2x_pdbbind/ani2x_refined.py
+python /data/localhost/not-backed-up/jemurray/ani2x_pdbbind/ani2x_refined_lig.py

@@ -40,23 +40,36 @@ consts_def = {'Rcr': 'radial cutoff',
 
 def get_data_loader_protein_ligand(df_bind, df_gen):
     data_pl = convert_to_data(df_bind, df_gen)
-    n = len(data_pl)
     data_pl = get_data_loader(dataset=data_pl, batchsize=1, shuffle=False)
     return data_pl
+
+def get_data_loader_protein_ligand_no_water(df_bind, df_gen):
+    df_bind_pl = df_bind[df_bind.atom_kind.isin({'P', 'L'})]
+    data_pl = convert_to_data(df_bind_pl, df_gen)
+    data_pl = get_data_loader(dataset=data_pl, batchsize=1, shuffle=False)
+    return data_pl
+
+def get_data_loader_ligand_no_water(df_bind, df_gen):
+    df_bind_l = df_bind.query("atom_kind == 'L'")
+    data_l = convert_to_data(df_bind_l, df_gen)
+    data_l = get_data_loader(dataset=data_l, batchsize=1, shuffle=False)
+    return data_l
 
 def get_data_loader_ligand(df_bind, df_gen):
     df_bind_l = df_bind.query("atom_kind != 'P'")
     data_l = convert_to_data(df_bind_l, df_gen)
-    n = len(data_l)
     data_l = get_data_loader(dataset=data_l, batchsize=1, shuffle=False)
     return data_l
 
 def get_data_loader_protein(df_bind, df_gen):
     df_bind_p = df_bind.query("atom_kind != 'L'")
     data_p = convert_to_data(df_bind_p, df_gen)
-    n = len(data_p)
     data_p = get_data_loader(dataset=data_p, batchsize=1, shuffle=False)
     return data_p
+
+def apply_masks_compare_ligand(df_bind):
+    df_bind['Mask'] = (df_bind.atom_kind == 'L')
+    return df_bind
 
 def apply_masks_compare(df_bind, distance_mask=6.5):
     # Begin by masking all atoms
